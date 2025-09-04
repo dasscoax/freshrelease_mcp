@@ -65,6 +65,7 @@ npx -y @smithery/cli install @dasscoax/freshrelease_mcp --client claude
 1. Install Claude Desktop if you haven't already
 2. Recommended: Use `uvx` to fetch and run from PyPI (no install needed). Add the following to your `claude_desktop_config.json`:
 
+
 ```json
 {
   "mcpServers": {

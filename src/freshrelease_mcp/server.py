@@ -69,7 +69,7 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/projects"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
     url = f"{base_url}/projects"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
@@ -99,7 +99,7 @@ async def fr_get_project(project_identifier: Union[int, str]) -> Dict[str, Any]:
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/api/v1"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
     url = f"{base_url}/projects/{project_identifier}"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
@@ -133,7 +133,7 @@ async def fr_create_task(
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
     url = f"{base_url}/{project_identifier}/issues"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
