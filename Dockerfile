@@ -16,7 +16,6 @@ COPY README.md ./
 # --frozen ensures we respect the pinned versions in uv.lock
 RUN uv sync --frozen --no-dev
 
-
 # Runtime stage: slim base with only the venv and sources
 FROM debian:bookworm-slim AS runtime
 
@@ -44,5 +43,3 @@ COPY pyproject.toml ./pyproject.toml
 # - FRESHRELEASE_DOMAIN
 
 ENTRYPOINT ["freshrelease-mcp"]
-
-
