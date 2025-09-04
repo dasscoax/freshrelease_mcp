@@ -49,6 +49,28 @@ If distributed via Smithery, install for Claude Desktop (example):
 npx -y @smithery/cli install @dasscoax/freshrelease_mcp --client claude
 ```
 
+### Installing from PyPI
+
+Install the published package directly from PyPI:
+
+```bash
+pip install -U freshrelease-mcp
+```
+
+Verify installation:
+
+```bash
+freshrelease-mcp --help
+```
+
+Run the server locally with environment variables:
+
+```bash
+FRESHRELEASE_API_KEY="<YOUR_FRESHRELEASE_API_KEY>" \
+FRESHRELEASE_DOMAIN="<YOUR_FRESHRELEASE_DOMAIN>" \
+freshrelease-mcp
+```
+
 ### Prerequisites
 
 - Freshrelease API access (domain + API key)
