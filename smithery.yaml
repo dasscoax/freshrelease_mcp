@@ -1,0 +1,33 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+image: ghcr.io/dasscoax/freshrelease-mcp:1.2.0
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - freshreleaseApiKey
+      - freshreleaseDomain
+    properties:
+      freshreleaseApiKey:
+        type: string
+        description: Freshrelease API Key
+      freshreleaseDomain:
+        type: string
+        description: Freshrelease domain (e.g., yourcompany.freshdesk.com)
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: 'freshrelease-mcp',
+      args: [],
+      env: {
+        FRESHRELEASE_API_KEY: config.freshreleaseApiKey,
+        FRESHRELEASE_DOMAIN: config.freshreleaseDomain
+      }
+    })
+  exampleConfig:
+    freshreleaseApiKey: YOUR_FAKE_FRESHRELEASE_API_KEY
+    freshreleaseDomain: yourcompany.freshrelease.com
