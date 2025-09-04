@@ -69,7 +69,7 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/api/v1"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}/projects"
     url = f"{base_url}/projects"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
@@ -133,8 +133,8 @@ async def fr_create_task(
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/api/v1"
-    url = f"{base_url}/projects/{project_identifier}/tasks"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}/"
+    url = f"{base_url}/{project_identifier}/issues"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
         "Content-Type": "application/json",
@@ -162,13 +162,36 @@ async def fr_create_task(
 
 
 @mcp.tool()
-async def fr_get_task(task_id: int) -> Dict[str, Any]:
+async def fr_get_task(project_identifier: Union[int, str],task_id: int) -> Dict[str, Any]:
     """Get a task from Freshrelease by ID."""
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}/api/v1"
-    url = f"{base_url}/tasks/{task_id}"
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/issues/{task_id}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to fetch task: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
+@mcp.tool()
+async def fr_get_all_tasks(project_identifier: Union[int, str]) -> Dict[str, Any]:
+    """Get a task from Freshrelease by ID."""
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/issues"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
         "Content-Type": "application/json",
