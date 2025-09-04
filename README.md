@@ -63,26 +63,71 @@ npx -y @smithery/cli install @dasscoax/freshrelease_mcp --client claude
 ### Usage with Claude Desktop
 
 1. Install Claude Desktop if you haven't already
-2. Add the following configuration to your `claude_desktop_config.json`:
+2. Recommended: Use `uvx` to fetch and run from PyPI (no install needed). Add the following to your `claude_desktop_config.json`:
 
 ```json
-"mcpServers": {
-  "freshrelease-mcp": {
-    "command": " commit",
-    "args": [
+{
+  "mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uvx",
+      "args": [
         "freshrelease-mcp"
-    ],
-    "env": {
-      "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
-      "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
+      ],
+      "env": {
+        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
+        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
+      }
     }
   }
 }
 ```
 
 **Important Notes**:
-- Replace `YOUR_FRESHRELEASE_API_KEY` with your Freshrelease API key
-- Replace `YOUR_FRESHRELEASE_DOMAIN` with your Freshrelease domain (e.g., `yourcompany.freshrelease.com`)
+- Replace `<YOUR_FRESHRELEASE_API_KEY>` with your Freshrelease API key
+- Replace `<YOUR_FRESHRELEASE_DOMAIN>` with your Freshrelease domain (e.g., `yourcompany.freshrelease.com`)
+ - Alternatively, you can install the package and point `command` directly to `freshrelease-mcp`.
+
+### Usage with Cursor
+
+1. Add the following to Cursor settings JSON (Settings → Features → MCP → Edit JSON):
+
+```json
+{
+  "mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uvx",
+      "args": [
+        "freshrelease-mcp"
+      ],
+      "env": {
+        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
+        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
+      }
+    }
+  }
+}
+```
+
+### Usage with VS Code (Claude extension)
+
+1. In VS Code settings (JSON), add:
+
+```json
+{
+  "claude.mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uvx",
+      "args": [
+        "freshrelease-mcp"
+      ],
+      "env": {
+        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
+        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
+      }
+    }
+  }
+}
+```
 
 ## Example Operations
 
