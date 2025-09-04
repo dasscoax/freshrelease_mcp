@@ -1,5 +1,5 @@
 # Freshrelease MCP Server
-[![smithery badge](https://smithery.ai/badge/@kalidass/freshrelease_mcp)](https://smithery.ai/server/@kalidass/freshrelease_mcp)
+[![smithery badge](https://smithery.ai/badge/@dasscoax/freshrelease_mcp)](https://smithery.ai/server/@dasscoax/freshrelease_mcp)
 
 An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks.
 
@@ -46,7 +46,7 @@ The server offers several tools for Freshrelease operations:
 If distributed via Smithery, install for Claude Desktop (example):
 
 ```bash
-npx -y @smithery/cli install @kalidass/freshrelease_mcp --client claude
+npx -y @smithery/cli install @dasscoax/freshrelease_mcp --client claude
 ```
 
 ### Prerequisites
