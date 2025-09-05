@@ -22,10 +22,11 @@ The server offers several tools for Freshrelease operations:
   - Inputs: `project_identifier` (number|string, required)
 
 - `fr_create_task`: Create a task under a project
-  - Inputs: `project_identifier` (number|string, required), `title` (string, required), `description` (string, optional), `assignee_id` (number, optional), `status` (string, optional), `due_date` (YYYY-MM-DD, optional)
+  - Inputs: `project_identifier` (number|string, required), `title` (string, required), `description` (string, optional), `assignee_id` (number, optional), `status` (string, optional), `due_date` (YYYY-MM-DD, optional), `additional_fields` (object, optional)
+  - Notes: `additional_fields` allows passing arbitrary extra fields supported by your Freshrelease account. Core fields (`title`, `description`, `assignee_id`, `status`, `due_date`) cannot be overridden.
 
 - `fr_get_task`: Get a task by ID
-  - Inputs: `task_id` (number, required)
+  - Inputs: `project_identifier` (number|string, required), `task_id` (number, required)
 
 - `fr_list_status_categories`: List status categories (key→id and name→id)
   - Inputs: None
@@ -158,9 +159,25 @@ Once configured, you can ask Claude to perform operations like:
 
 - "Create a Freshrelease project named 'Roadmap Q4'"
 - "Get project 'ENG' details"
-- "Create a task 'Add CI pipeline' under project 'ENG'"
-- "What is the id for status category 'Yet To Start'?"
+- "Create a task 'Add CI pipeline' under project 'ENG' with a custom field"
 
+Example with custom fields for task creation:
+
+```json
+{
+  "tool": "fr_create_task",
+  "args": {
+    "project_identifier": "ENG",
+    "title": "Add CI pipeline",
+    "status": "in_progress",
+    "additional_fields": {
+      "priority": "High",
+      "labels": ["devops", "ci"],
+      "estimate": 3
+    }
+  }
+}
+```
 
 ## Testing
 

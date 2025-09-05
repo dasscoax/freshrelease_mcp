@@ -63,6 +63,12 @@ class STATUS_CATEGORY_NAMES(str, Enum):
     WORK_IN_PROGRESS = "Work In Progress"
     COMPLETED = "Completed"
 
+class TASK_STATUS(str, Enum):
+    """Machine-friendly task status values supported by the API."""
+    TODO = "todo"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+
 @mcp.tool()
 async def fr_create_project(name: str, description: Optional[str] = None) -> Dict[str, Any]:
     """Create a project in Freshrelease."""
@@ -123,12 +129,19 @@ async def fr_create_task(
     title: str,
     description: Optional[str] = None,
     assignee_id: Optional[int] = None,
-    status: Optional[str] = None,
+    status: Optional[Union[str, TASK_STATUS]] = None,
     due_date: Optional[str] = None,
+    issue_type_name: Optional[str] = None,
+    additional_fields: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create a task under a Freshrelease project.
 
     - due_date: ISO 8601 date string (e.g., 2025-12-31) if supported by your account
+    - issue_type_name: case-insensitive issue type key (e.g., "epic", "task").
+      Resolved to an `issue_type_id` via `/project_issue_types` and added to payload.
+    - additional_fields: arbitrary key/value pairs to include in the request body
+      (unknown keys will be passed through to the API). Core fields
+      (title, description, assignee_id, status, due_date, issue_type_id) cannot be overridden.
     """
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
@@ -146,11 +159,45 @@ async def fr_create_task(
     if assignee_id is not None:
         payload["assignee_id"] = assignee_id
     if status is not None:
-        payload["status"] = status
+        payload["status"] = status.value if isinstance(status, TASK_STATUS) else status
     if due_date is not None:
         payload["due_date"] = due_date
 
+    # Merge any additional fields without allowing overrides of core fields
+    if additional_fields:
+        protected_keys = {"title", "description", "assignee_id", "status", "due_date", "issue_type_id"}
+        for key, value in additional_fields.items():
+            if key in protected_keys:
+                continue
+            payload[key] = value
+
+    # Use a single client for optional issue type resolution and the final POST
     async with httpx.AsyncClient() as client:
+        # Resolve issue_type_name -> issue_type_id via project_issue_types endpoint
+        name_to_resolve = (issue_type_name or "task")
+        if name_to_resolve:
+            issue_types_url = f"{base_url}/{project_identifier}/project_issue_types"
+            try:
+                it_resp = await client.get(issue_types_url, headers=headers)
+                it_resp.raise_for_status()
+                it_data = it_resp.json()
+                # Expecting structure with 'issue_types': [ { name, id, ... } ]
+                types_list = it_data.get("issue_types", []) if isinstance(it_data, dict) else []
+                target = name_to_resolve.strip().lower()
+                matched_id: Optional[int] = None
+                for t in types_list:
+                    name = str(t.get("name", "")).strip().lower()
+                    if name == target:
+                        matched_id = t.get("id")
+                        break
+                if matched_id is None:
+                    return {"error": f"Issue type '{name_to_resolve}' not found", "details": it_data}
+                payload["issue_type_id"] = matched_id
+            except httpx.HTTPStatusError as e:
+                return {"error": f"Failed to resolve issue type: {str(e)}", "details": e.response.json() if e.response else None}
+            except Exception as e:
+                return {"error": f"An unexpected error occurred while resolving issue type: {str(e)}"}
+
         try:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
@@ -204,6 +251,42 @@ async def fr_get_all_tasks(project_identifier: Union[int, str]) -> Dict[str, Any
             return response.json()
         except httpx.HTTPStatusError as e:
             return {"error": f"Failed to fetch task: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
+@mcp.tool()
+async def fr_get_issue_type_by_name(project_identifier: Union[int, str], issue_type_name: str) -> Dict[str, Any]:
+    """Fetch the issue type object for a given human name within a project.
+
+    This function lists issue types under the specified project and returns the
+    first match by case-insensitive name comparison.
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/issue_types"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            # Expecting a list of objects with a 'name' property
+            if isinstance(data, list):
+                target = issue_type_name.strip().lower()
+                for item in data:
+                    name = str(item.get("name", "")).strip().lower()
+                    if name == target:
+                        return item
+                return {"error": f"Issue type '{issue_type_name}' not found"}
+            return {"error": "Unexpected response structure for issue types", "details": data}
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to fetch issue types: {str(e)}", "details": e.response.json() if e.response else None}
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
 
