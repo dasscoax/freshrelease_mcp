@@ -355,6 +355,55 @@ async def fr_search_users(project_identifier: Union[int, str], search_text: str)
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
 
+@mcp.tool()
+async def fr_issue_status(project_identifier: Union[int, str], issue_type_name: str) -> Any:
+    """Get possible transitions (statuses) for an issue type by name.
+
+    - Resolves `issue_type_name` via `/{project_identifier}/project_issue_types`
+      then calls `/{project_identifier}/issue_types/{issue_type_id}/possible_transitions`.
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Resolve issue_type_name -> issue_type_id
+        types_url = f"{base_url}/{project_identifier}/project_issue_types"
+        try:
+            t_resp = await client.get(types_url, headers=headers)
+            t_resp.raise_for_status()
+            t_data = t_resp.json()
+            types_list = t_data.get("issue_types", []) if isinstance(t_data, dict) else []
+            target = issue_type_name.strip().lower()
+            matched_id: Optional[int] = None
+            for t in types_list:
+                name = str(t.get("name", "")).strip().lower()
+                if name == target:
+                    matched_id = t.get("id")
+                    break
+            if matched_id is None:
+                return {"error": f"Issue type '{issue_type_name}' not found", "details": t_data}
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to resolve issue type: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred while resolving issue type: {str(e)}"}
+
+        # Fetch possible transitions for the resolved issue type id
+        transitions_url = f"{base_url}/{project_identifier}/issue_types/{matched_id}/possible_transitions"
+        try:
+            p_resp = await client.get(transitions_url, headers=headers)
+            p_resp.raise_for_status()
+            return p_resp.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to fetch possible transitions: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred while fetching transitions: {str(e)}"}
+
 def main():
     logging.info("Starting Freshdesk MCP server")
     mcp.run(transport='stdio')
