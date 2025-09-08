@@ -247,13 +247,13 @@ async def fr_create_task(
 
 
 @mcp.tool()
-async def fr_get_task(project_identifier: Union[int, str],task_id: int) -> Dict[str, Any]:
+async def fr_get_task(project_identifier: Union[int, str], key: Union[int, str]) -> Dict[str, Any]:
     """Get a task from Freshrelease by ID."""
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
 
     base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/issues/{task_id}"
+    url = f"{base_url}/{project_identifier}/issues/{key}"
     headers = {
         "Authorization": f"Token {FRESHRELEASE_API_KEY}",
         "Content-Type": "application/json",
@@ -355,12 +355,36 @@ async def fr_search_users(project_identifier: Union[int, str], search_text: str)
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
 
-@mcp.tool()
-async def fr_issue_status(project_identifier: Union[int, str], issue_type_name: str) -> Any:
-    """Get possible transitions (statuses) for an issue type by name.
+async def issue_ids_from_keys(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], issue_keys: List[Union[str, int]]) -> List[int]:
+    resolved: List[int] = []
+    for key in issue_keys:
+        url = f"{base_url}/{project_identifier}/issues/{key}"
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and "id" in data:
+            resolved.append(int(data["id"]))
+        else:
+            raise httpx.HTTPStatusError("Unexpected issue response structure", request=resp.request, response=resp)
+    return resolved
 
-    - Resolves `issue_type_name` via `/{project_identifier}/project_issue_types`
-      then calls `/{project_identifier}/issue_types/{issue_type_id}/possible_transitions`.
+async def testcase_id_from_key(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], test_case_key: Union[str, int]) -> int:
+    url = f"{base_url}/{project_identifier}/test_cases/{test_case_key}"
+    resp = await client.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "id" in data:
+        return int(data["id"])
+    raise httpx.HTTPStatusError("Unexpected test case response structure", request=resp.request, response=resp)
+
+@mcp.tool()
+async def fr_link_testcase_issues(project_identifier: Union[int, str], testcase_keys: List[Union[str, int]], issue_keys: List[Union[str, int]]) -> Any:
+    """Bulk update multiple test cases with issue links by keys.
+
+    - Resolves `testcase_keys[]` via `GET /{project_identifier}/test_cases/{key}` to ids
+    - Resolves `issue_keys[]` via `GET /{project_identifier}/issues/{key}` to ids
+    - Performs: PUT `/{project_identifier}/test_cases/update_many` with body
+      { "ids": [...], "test_case": { "issue_ids": [...] } }
     """
     if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
         return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
@@ -372,37 +396,22 @@ async def fr_issue_status(project_identifier: Union[int, str], issue_type_name: 
     }
 
     async with httpx.AsyncClient() as client:
-        # Resolve issue_type_name -> issue_type_id
-        types_url = f"{base_url}/{project_identifier}/project_issue_types"
         try:
-            t_resp = await client.get(types_url, headers=headers)
-            t_resp.raise_for_status()
-            t_data = t_resp.json()
-            types_list = t_data.get("issue_types", []) if isinstance(t_data, dict) else []
-            target = issue_type_name.strip().lower()
-            matched_id: Optional[int] = None
-            for t in types_list:
-                name = str(t.get("name", "")).strip().lower()
-                if name == target:
-                    matched_id = t.get("id")
-                    break
-            if matched_id is None:
-                return {"error": f"Issue type '{issue_type_name}' not found", "details": t_data}
+            # Resolve testcase keys to ids
+            resolved_testcase_ids: List[int] = []
+            for key in testcase_keys:
+                resolved_testcase_ids.append(await testcase_id_from_key(client, base_url, project_identifier, headers, key))
+            # Resolve issue keys to ids
+            resolved_issue_ids = await issue_ids_from_keys(client, base_url, project_identifier, headers, issue_keys)
+            url = f"{base_url}/{project_identifier}/test_cases/update_many"
+            payload = {"ids": resolved_testcase_ids, "test_case": {"issue_ids": resolved_issue_ids}}
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to resolve issue type: {str(e)}", "details": e.response.json() if e.response else None}
+            return {"error": f"Failed to bulk update testcases: {str(e)}", "details": e.response.json() if e.response else None}
         except Exception as e:
-            return {"error": f"An unexpected error occurred while resolving issue type: {str(e)}"}
-
-        # Fetch possible transitions for the resolved issue type id
-        transitions_url = f"{base_url}/{project_identifier}/issue_types/{matched_id}/possible_transitions"
-        try:
-            p_resp = await client.get(transitions_url, headers=headers)
-            p_resp.raise_for_status()
-            return p_resp.json()
-        except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch possible transitions: {str(e)}", "details": e.response.json() if e.response else None}
-        except Exception as e:
-            return {"error": f"An unexpected error occurred while fetching transitions: {str(e)}"}
+            return {"error": f"An unexpected error occurred: {str(e)}"}
 
 def main():
     logging.info("Starting Freshdesk MCP server")
