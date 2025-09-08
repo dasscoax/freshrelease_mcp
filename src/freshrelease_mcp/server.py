@@ -132,6 +132,7 @@ async def fr_create_task(
     status: Optional[Union[str, TASK_STATUS]] = None,
     due_date: Optional[str] = None,
     issue_type_name: Optional[str] = None,
+    user: Optional[str] = None,
     additional_fields: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create a task under a Freshrelease project.
@@ -139,6 +140,8 @@ async def fr_create_task(
     - due_date: ISO 8601 date string (e.g., 2025-12-31) if supported by your account
     - issue_type_name: case-insensitive issue type key (e.g., "epic", "task").
       Resolved to an `issue_type_id` via `/project_issue_types` and added to payload.
+    - user: optional name or email. If provided and `assignee_id` is not,
+      resolves to a user id via `/{project_identifier}/users?q=...` and sets `assignee_id`.
     - additional_fields: arbitrary key/value pairs to include in the request body
       (unknown keys will be passed through to the API). Core fields
       (title, description, assignee_id, status, due_date, issue_type_id) cannot be overridden.
@@ -171,7 +174,7 @@ async def fr_create_task(
                 continue
             payload[key] = value
 
-    # Use a single client for optional issue type resolution and the final POST
+    # Use a single client for optional resolutions and the final POST
     async with httpx.AsyncClient() as client:
         # Resolve issue_type_name -> issue_type_id via project_issue_types endpoint
         name_to_resolve = (issue_type_name or "task")
@@ -197,6 +200,41 @@ async def fr_create_task(
                 return {"error": f"Failed to resolve issue type: {str(e)}", "details": e.response.json() if e.response else None}
             except Exception as e:
                 return {"error": f"An unexpected error occurred while resolving issue type: {str(e)}"}
+
+        # Resolve user -> assignee_id if applicable
+        if ("assignee_id" not in payload) and user:
+            users_url = f"{base_url}/{project_identifier}/users"
+            params = {"q": user}
+            try:
+                u_resp = await client.get(users_url, headers=headers, params=params)
+                u_resp.raise_for_status()
+                users_data = u_resp.json()
+                chosen_id: Optional[int] = None
+                if isinstance(users_data, list) and users_data:
+                    lowered = user.strip().lower()
+                    # Prefer exact email match
+                    for item in users_data:
+                        email = str(item.get("email", "")).strip().lower()
+                        if email and email == lowered:
+                            chosen_id = item.get("id")
+                            break
+                    # Then exact name match
+                    if chosen_id is None:
+                        for item in users_data:
+                            name_val = str(item.get("name", "")).strip().lower()
+                            if name_val and name_val == lowered:
+                                chosen_id = item.get("id")
+                                break
+                    # Fallback to first result
+                    if chosen_id is None:
+                        chosen_id = users_data[0].get("id")
+                if chosen_id is None:
+                    return {"error": f"No users found matching '{user}'"}
+                payload["assignee_id"] = chosen_id
+            except httpx.HTTPStatusError as e:
+                return {"error": f"Failed to resolve user: {str(e)}", "details": e.response.json() if e.response else None}
+            except Exception as e:
+                return {"error": f"An unexpected error occurred while resolving user: {str(e)}"}
 
         try:
             response = await client.post(url, headers=headers, json=payload)
@@ -287,6 +325,33 @@ async def fr_get_issue_type_by_name(project_identifier: Union[int, str], issue_t
             return {"error": "Unexpected response structure for issue types", "details": data}
         except httpx.HTTPStatusError as e:
             return {"error": f"Failed to fetch issue types: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
+@mcp.tool()
+async def fr_search_users(project_identifier: Union[int, str], search_text: str) -> Any:
+    """Search users in a project by name or email.
+
+    Calls `/{project_identifier}/users?q=search_text` and returns the JSON response.
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/users"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    params = {"q": search_text}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to search users: {str(e)}", "details": e.response.json() if e.response else None}
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
 
