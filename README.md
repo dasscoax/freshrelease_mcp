@@ -1,5 +1,5 @@
 # Freshrelease MCP Server
-[![smithery badge](https://smithery.ai/badge/@dasscoax/freshrelease_mcp)](https://smithery.ai/server/@dasscoax/freshrelease_mcp)
+
 
 An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks.
 
@@ -8,6 +8,10 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 - **Freshrelease Integration**: Seamless interaction with Freshrelease API endpoints
 - **AI Model Support**: Enables AI models to perform project/task operations through Freshrelease
 - **Automated Project Management**: Handle project and task creation and retrieval
+- **Smart Name Resolution**: Automatic conversion of human-readable names to IDs
+- **Custom Field Detection**: Automatic detection and prefixing of custom fields
+- **Advanced Filtering**: Powerful task filtering with multiple query formats
+
 
 ## Components
 
@@ -40,359 +44,201 @@ The server offers several tools for Freshrelease operations:
 - `fr_link_testcase_issues`: Bulk link issues to one or more testcases (using keys)
   - Inputs: `project_identifier` (number|string, required), `testcase_keys` (array of string|number), `issue_keys` (array of string|number)
 
-## MCP Tool Reference
+- `fr_filter_tasks`: Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection
+  - Inputs: `project_identifier` (number|string, optional), `query` (string|object, optional), `query_format` (string, optional), plus 19 standard field parameters
+  - Standard Fields: `title`, `description`, `status_id` (ID or name), `priority_id`, `owner_id` (ID, name, or email), `issue_type_id` (ID or name), `project_id` (ID or key), `story_points`, `sprint_id` (ID or name), `start_date`, `due_by`, `release_id` (ID or name), `tags`, `document_ids`, `parent_id` (ID or issue key), `epic_id` (ID or issue key), `sub_project_id` (ID or name), `effort_value`, `duration_value`
+  - Notes: Supports individual field parameters or query format. Automatically resolves names to IDs for all supported fields. Automatically detects and prefixes custom fields with "cf_". Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
 
-<style>
-.tool-table { width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-.tool-table thead th { background: #0f172a; color: #fff; padding: 12px 10px; text-align: left; font-weight: 600; letter-spacing: 0.2px; }
-.tool-table tbody td { border-top: 1px solid #e5e7eb; vertical-align: top; padding: 12px 10px; }
-.tool-table tbody tr:nth-child(odd) { background: #f8fafc; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 12px; line-height: 18px; margin-right: 6px; background: #e2e8f0; color: #0f172a; }
-.badge.req { background: #dbeafe; color: #1e3a8a; }
-.badge.opt { background: #ecfccb; color: #3f6212; }
-.code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #0b1020; color: #e2e8f0; padding: 2px 6px; border-radius: 6px; }
-.small { color: #475569; font-size: 12px; }
-.note { background: #fff7ed; border: 1px solid #fed7aa; padding: 8px 10px; border-radius: 8px; color: #7c2d12; }
-</style>
+- `fr_save_filter`: Save a filter using query_hash from a previous fr_filter_tasks call
+  - Inputs: `label` (string, required), `query_hash` (array, required), `project_identifier` (number|string, optional), `private_filter` (boolean, optional, default: true), `quick_filter` (boolean, optional, default: false)
+  - Notes: Creates and saves custom filters that can be reused. Use fr_filter_tasks first to get the query_hash, then save it with this function. Perfect for creating reusable filter presets.
 
-<table class="tool-table">
-  <thead>
-    <tr>
-      <th>Tool</th>
-      <th>Description</th>
-      <th>Required Params</th>
-      <th>Optional Params</th>
-      <th>Notes</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><span class="code">fr_create_project</span></td>
-      <td>Create a Freshrelease project</td>
-      <td>
-        <span class="badge req">name: string</span>
-      </td>
-      <td>
-        <span class="badge opt">description: string</span>
-      </td>
-      <td></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_project</span></td>
-      <td>Get a project by id or key</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-      </td>
-      <td></td>
-      <td></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_create_task</span></td>
-      <td>Create an issue/task in a project</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">title: string</span>
-      </td>
-      <td>
-        <span class="badge opt">description: string</span>
-        <span class="badge opt">assignee_id: number</span>
-        <span class="badge opt">status: string|enum</span>
-        <span class="badge opt">due_date: YYYY-MM-DD</span>
-        <span class="badge opt">issue_type_name: string (defaults to "task")</span>
-        <span class="badge opt">user: string (email or name)</span>
-        <span class="badge opt">additional_fields: object</span>
-      </td>
-      <td>
-        - <span class="small">If <span class="code">assignee_id</span> not provided and <span class="code">user</span> is, the user is looked up by <span class="code">/{project}/users?q=..</span> to set <span class="code">assignee_id</span>.</span><br/>
-        - <span class="small"><span class="code">issue_type_name</span> resolves via <span class="code">/{project}/project_issue_types</span> to an <span class="code">issue_type_id</span>.</span><br/>
-        - <span class="small">Protected keys in <span class="code">additional_fields</span> won’t override core fields.</span>
-      </td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_task</span></td>
-      <td>Get an issue by key or id</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">key: number|string</span>
-      </td>
-      <td></td>
-      <td></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_all_tasks</span></td>
-      <td>List all issues in a project</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-      </td>
-      <td></td>
-      <td></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_issue_type_by_name</span></td>
-      <td>Resolve an issue type object by name</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">issue_type_name: string</span>
-      </td>
-      <td></td>
-      <td></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_search_users</span></td>
-      <td>Search users by name or email</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">search_text: string</span>
-      </td>
-      <td></td>
-      <td><span class="small">Calls <span class="code">/{project}/users?q=...</span></span></td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_link_testcase_issues</span></td>
-      <td>Link issues to one or more testcases (by keys)</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">testcase_keys: array&lt;string|number&gt;</span>
-        <span class="badge req">issue_keys: array&lt;string|number&gt;</span>
-      </td>
-      <td></td>
-      <td>
-        <span class="small">Resolves keys to ids, then calls <span class="code">PUT /{project}/test_cases/update_many</span>.</span>
-      </td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_list_testcases</span></td>
-      <td>List all test cases in a project</td>
-      <td></td>
-      <td>
-        <span class="badge opt">project_identifier: number|string</span>
-      </td>
-      <td>
-        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
-      </td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_testcase</span></td>
-      <td>Get a specific test case by key or ID</td>
-      <td>
-        <span class="badge req">test_case_key: string|number</span>
-      </td>
-      <td>
-        <span class="badge opt">project_identifier: number|string</span>
-      </td>
-      <td>
-        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
-      </td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_get_testcases_by_section</span></td>
-      <td>Get test cases in a section and its sub-sections</td>
-      <td>
-        <span class="badge req">section_name: string</span>
-      </td>
-      <td>
-        <span class="badge opt">project_identifier: number|string</span>
-      </td>
-      <td>
-        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
-      </td>
-    </tr>
-    <tr>
-      <td><span class="code">fr_add_testcases_to_testrun</span></td>
-      <td>Add test cases to a test run</td>
-      <td>
-        <span class="badge req">project_identifier: number|string</span>
-        <span class="badge req">test_run_id: number|string</span>
-      </td>
-      <td>
-        <span class="badge opt">test_case_keys: array&lt;string|number&gt;</span>
-        <span class="badge opt">section_hierarchy_paths: array&lt;string&gt;</span>
-        <span class="badge opt">section_subtree_ids: array&lt;string|number&gt;</span>
-        <span class="badge opt">section_ids: array&lt;string|number&gt;</span>
-        <span class="badge opt">filter_rule: array&lt;object&gt;</span>
-      </td>
-      <td>
-        <span class="small">Resolves keys to IDs. <span class="code">section_hierarchy_paths</span> format: "Parent > Child > Grandchild".</span>
-      </td>
-    </tr>
-  </tbody>
-</table>
+- `fr_clear_filter_cache`: Clear the custom fields cache for filter operations
+  - Inputs: None
+  - Notes: Useful when custom fields are added/modified in Freshrelease and you want to refresh the cache without restarting the server.
 
-<div class="note">
-For <span class="code">status</span> you may pass a string or enum. Enum values: <span class="code">todo</span>, <span class="code">in_progress</span>, <span class="code">done</span>.
-</div>
+- `fr_clear_lookup_cache`: Clear the lookup cache for sprints, releases, tags, and subprojects
+  - Inputs: None
+  - Notes: Useful when these items are added/modified in Freshrelease and you want to refresh the cache without restarting the server.
+
+- `fr_clear_resolution_cache`: Clear the resolution cache for name-to-ID lookups
+  - Inputs: None
+  - Notes: Useful when you want to refresh resolved IDs without restarting the server.
+
+- `fr_clear_all_caches`: Clear all caches (custom fields, lookup data, and resolution cache)
+  - Inputs: None
+  - Notes: Useful when you want to refresh all cached data without restarting the server.
+
+### Lookup Functions
+- `fr_get_sprint_by_name`: Get sprint ID by name
+  - Inputs: `project_identifier` (number|string, optional), `sprint_name` (string, required)
+
+- `fr_get_release_by_name`: Get release ID by name
+  - Inputs: `project_identifier` (number|string, optional), `release_name` (string, required)
+
+- `fr_get_tag_by_name`: Get tag ID by name
+  - Inputs: `project_identifier` (number|string, optional), `tag_name` (string, required)
+
+- `fr_get_subproject_by_name`: Get subproject ID by name
+  - Inputs: `project_identifier` (number|string, optional), `subproject_name` (string, required)
+
+
+
+## Advanced Features
+
+### Smart Name Resolution
+The server automatically converts human-readable names to Freshrelease IDs:
+- **User Names/Emails** → User IDs
+- **Issue Type Names** → Issue Type IDs  
+- **Status Names** → Status IDs
+- **Sprint Names** → Sprint IDs
+- **Release Names** → Release IDs
+- **Project Keys** → Project IDs
+- **Issue Keys** → Issue IDs
+
+### Custom Field Detection
+- **Automatic Detection**: Fetches custom fields from Freshrelease form API
+- **Smart Prefixing**: Automatically adds "cf_" prefix to custom fields
+- **Caching**: Custom fields are cached for performance
+- **Standard Fields**: Recognizes 19 standard Freshrelease fields
+
+### Advanced Filtering
+- **Multiple Query Formats**: Comma-separated or JSON format
+- **Individual Parameters**: Use specific field parameters
+- **Combined Queries**: Mix individual parameters with query strings
+- **Name Resolution**: All field names automatically resolved to IDs
 
 ## Getting Started
 
-
-### Installing from PyPI
-
-Install the published package directly from PyPI:
-
+### Installation
 ```bash
-pip install -U freshrelease-mcp
+pip install freshrelease-mcp
 ```
 
-Verify installation:
-
+### Environment Setup
 ```bash
-freshrelease-mcp --help
+export FRESHRELEASE_API_KEY="your_api_key_here"
+export FRESHRELEASE_DOMAIN="your_domain.freshrelease.com"
+export FRESHRELEASE_PROJECT_KEY="your_project_key"  # Optional: default project
 ```
 
-Run the server locally with environment variables:
+### Basic Usage
+```python
+# Create a project
+fr_create_project(name="My Project", description="Project description")
 
-```bash
-FRESHRELEASE_API_KEY="<YOUR_FRESHRELEASE_API_KEY>" \
-FRESHRELEASE_DOMAIN="<YOUR_FRESHRELEASE_DOMAIN>" \
-FRESHRELEASE_PROJECT_KEY="<YOUR_PROJECT_KEY>" \
-freshrelease-mcp
+# Create a task with smart name resolution
+fr_create_task(
+    title="Fix bug in login",
+    issue_type_name="Bug",  # Automatically resolved to ID
+    user="john@example.com",  # Automatically resolved to assignee_id
+    status="In Progress"  # Automatically resolved to status ID
+)
+
+# Filter tasks with advanced criteria
+fr_filter_tasks(
+    owner_id="John Doe",  # Name automatically resolved to ID
+    status_id="In Progress",  # Status name resolved to ID
+    sprint_id="Sprint 1"  # Sprint name resolved to ID
+)
 ```
 
-### Prerequisites
 
-- Freshrelease API access (domain + API key)
-- Freshrelease API key
+## Configuration
 
 ### Environment Variables
-
-- `FRESHRELEASE_API_KEY`: Your Freshrelease API key (required)
-- `FRESHRELEASE_DOMAIN`: Your Freshrelease domain (required)
-- `FRESHRELEASE_PROJECT_KEY`: Default project key/ID to use when not specified in function calls (optional)
-
-**Note**: When `FRESHRELEASE_PROJECT_KEY` is set, you can omit the `project_identifier` parameter from most functions, and the server will automatically use the default project key.
-- `uvx` installed (`pip install uv` or `brew install uv`)
-
-### Configuration
-
-1. Obtain your Freshrelease API key
-2. Set up your Freshrelease domain and authentication details
-
-### Usage with Claude Desktop
-
-1. Install Claude Desktop if you haven't already
-2. Recommended: Use `uvx` to fetch and run from PyPI (no install needed). Add the following to your `claude_desktop_config.json`:
-
-
-```json
-{
-  "mcpServers": {
-    "freshrelease-mcp": {
-      "command": "uvx",
-      "args": [
-        "freshrelease-mcp"
-      ],
-      "env": {
-        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
-        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
-      }
-    }
-  }
-}
-```
-
-**Important Notes**:
-- Replace `<YOUR_FRESHRELEASE_API_KEY>` with your Freshrelease API key
-- Replace `<YOUR_FRESHRELEASE_DOMAIN>` with your Freshrelease domain (e.g., `yourcompany.freshrelease.com`)
- - Alternatively, you can install the package and point `command` directly to `freshrelease-mcp`.
-
-### Usage with Cursor
-
-1. Add the following to Cursor settings JSON (Settings → Features → MCP → Edit JSON):
-
-```json
-{
-  "mcpServers": {
-    "freshrelease-mcp": {
-      "command": "uvx",
-      "args": [
-        "freshrelease-mcp"
-      ],
-      "env": {
-        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
-        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
-      }
-    }
-  }
-}
-```
-
-### Usage with VS Code (Claude extension)
-
-1. In VS Code settings (JSON), add:
-
-```json
-{
-  "claude.mcpServers": {
-    "freshrelease-mcp": {
-      "command": "uvx",
-      "args": [
-        "freshrelease-mcp"
-      ],
-      "env": {
-        "FRESHRELEASE_API_KEY": "<YOUR_FRESHRELEASE_API_KEY>",
-        "FRESHRELEASE_DOMAIN": "<YOUR_FRESHRELEASE_DOMAIN>"
-      }
-    }
-  }
-}
-```
-
-## Example Operations
-
-Once configured, you can ask Claude to perform operations like:
-
-- "Create a Freshrelease project named 'Roadmap Q4'"
-- "Get project 'ENG' details"
-- "Create a task 'Add CI pipeline' under project 'ENG' with a custom field"
-
-Example with custom fields for task creation and assignee by email:
-
-```json
-{
-  "tool": "fr_create_task",
-  "args": {
-    "project_identifier": "ENG",
-    "title": "Add CI pipeline",
-    "status": "in_progress",
-    "issue_type_name": "task",
-    "user": "dev@yourco.com",
-    "additional_fields": {
-      "priority": "High",
-      "labels": ["devops", "ci"],
-      "estimate": 3
-    }
-  }
-}
-```
-
-Link multiple testcases to issues by keys:
-
-```json
-{
-  "tool": "fr_link_testcase_issues",
-  "args": {
-    "project_identifier": "ENG",
-    "testcase_keys": ["TC-101", "TC-102"],
-    "issue_keys": ["ENG-123", "ENG-456"]
-  }
-}
-```
-
-## Testing
-
-For testing purposes, you can start the server manually:
-
 ```bash
-uvx freshrelease-mcp --env FRESHRELEASE_API_KEY=<your_api_key> --env FRESHRELEASE_DOMAIN=<your_domain>
+# Required
+FRESHRELEASE_API_KEY="your_api_key_here"
+FRESHRELEASE_DOMAIN="your_domain.freshrelease.com"
+
+# Optional
+FRESHRELEASE_PROJECT_KEY="your_project_key"  # Default project identifier
 ```
 
-## Troubleshooting
+## Examples
 
-- Verify your Freshrelease API key and domain are correct
-- Ensure proper network connectivity to Freshrelease servers
-- Check API rate limits and quotas
-- Verify the `uvx` command is available in your PATH
+### Create a Project and Task
+```python
+# Create a project
+project = fr_create_project(
+    name="Web Application",
+    description="Main web application project"
+)
+
+# Create a task with smart resolution
+task = fr_create_task(
+    title="Implement user authentication",
+    description="Add login and registration functionality",
+    issue_type_name="Task",
+    user="john@example.com",
+    status="In Progress",
+    due_date="2024-12-31"
+)
+```
+
+### Filter Tasks
+```python
+# Filter by multiple criteria
+tasks = fr_filter_tasks(
+    owner_id="John Doe",
+    status_id="In Progress",
+    issue_type_id="Bug",
+    sprint_id="Sprint 1"
+)
+
+# Using query format
+tasks = fr_filter_tasks(
+    query="owner_id:John Doe,status_id:In Progress,cf_priority:High"
+)
+```
+
+### Save Filters
+```python
+# First, get a filter result
+result = fr_filter_tasks(
+    owner_id="John Doe",
+    status_id="In Progress",
+    issue_type_id="Bug"
+)
+
+# Then save the filter using the query_hash from the result
+saved_filter = fr_save_filter(
+    label="My Bug Filter",
+    query_hash=result.get("query_hash", []),
+    private_filter=True,
+    quick_filter=True
+)
+
+# Save a filter using query format
+result = fr_filter_tasks(query="priority_id:1,status_id:Open")
+saved_filter = fr_save_filter(
+    label="High Priority Tasks",
+    query_hash=result.get("query_hash", []),
+    private_filter=False
+)
+```
+
+### Test Case Management
+```python
+# Get test cases by section
+test_cases = fr_get_testcases_by_section(
+    section_name="Authentication > Login"
+)
+
+# Add test cases to test run
+fr_add_testcases_to_testrun(
+    test_run_id=123,
+    test_case_keys=["TC-001", "TC-002"],
+    section_hierarchy_paths=["Authentication > Login", "Authentication > Registration"]
+)
+```
 
 ## License
 
-This MCP server is licensed under the MIT License. See the LICENSE file in the project repository for full details.
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
