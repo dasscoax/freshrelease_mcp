@@ -160,6 +160,61 @@ The server offers several tools for Freshrelease operations:
         <span class="small">Resolves keys to ids, then calls <span class="code">PUT /{project}/test_cases/update_many</span>.</span>
       </td>
     </tr>
+    <tr>
+      <td><span class="code">fr_list_testcases</span></td>
+      <td>List all test cases in a project</td>
+      <td></td>
+      <td>
+        <span class="badge opt">project_identifier: number|string</span>
+      </td>
+      <td>
+        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
+      </td>
+    </tr>
+    <tr>
+      <td><span class="code">fr_get_testcase</span></td>
+      <td>Get a specific test case by key or ID</td>
+      <td>
+        <span class="badge req">test_case_key: string|number</span>
+      </td>
+      <td>
+        <span class="badge opt">project_identifier: number|string</span>
+      </td>
+      <td>
+        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
+      </td>
+    </tr>
+    <tr>
+      <td><span class="code">fr_get_testcases_by_section</span></td>
+      <td>Get test cases in a section and its sub-sections</td>
+      <td>
+        <span class="badge req">section_name: string</span>
+      </td>
+      <td>
+        <span class="badge opt">project_identifier: number|string</span>
+      </td>
+      <td>
+        <span class="small">Uses <span class="code">FRESHRELEASE_PROJECT_KEY</span> if project_identifier not provided.</span>
+      </td>
+    </tr>
+    <tr>
+      <td><span class="code">fr_add_testcases_to_testrun</span></td>
+      <td>Add test cases to a test run</td>
+      <td>
+        <span class="badge req">project_identifier: number|string</span>
+        <span class="badge req">test_run_id: number|string</span>
+      </td>
+      <td>
+        <span class="badge opt">test_case_keys: array&lt;string|number&gt;</span>
+        <span class="badge opt">section_hierarchy_paths: array&lt;string&gt;</span>
+        <span class="badge opt">section_subtree_ids: array&lt;string|number&gt;</span>
+        <span class="badge opt">section_ids: array&lt;string|number&gt;</span>
+        <span class="badge opt">filter_rule: array&lt;object&gt;</span>
+      </td>
+      <td>
+        <span class="small">Resolves keys to IDs. <span class="code">section_hierarchy_paths</span> format: "Parent > Child > Grandchild".</span>
+      </td>
+    </tr>
   </tbody>
 </table>
 
@@ -189,6 +244,7 @@ Run the server locally with environment variables:
 ```bash
 FRESHRELEASE_API_KEY="<YOUR_FRESHRELEASE_API_KEY>" \
 FRESHRELEASE_DOMAIN="<YOUR_FRESHRELEASE_DOMAIN>" \
+FRESHRELEASE_PROJECT_KEY="<YOUR_PROJECT_KEY>" \
 freshrelease-mcp
 ```
 
@@ -196,6 +252,14 @@ freshrelease-mcp
 
 - Freshrelease API access (domain + API key)
 - Freshrelease API key
+
+### Environment Variables
+
+- `FRESHRELEASE_API_KEY`: Your Freshrelease API key (required)
+- `FRESHRELEASE_DOMAIN`: Your Freshrelease domain (required)
+- `FRESHRELEASE_PROJECT_KEY`: Default project key/ID to use when not specified in function calls (optional)
+
+**Note**: When `FRESHRELEASE_PROJECT_KEY` is set, you can omit the `project_identifier` parameter from most functions, and the server will automatically use the default project key.
 - `uvx` installed (`pip install uv` or `brew install uv`)
 
 ### Configuration
