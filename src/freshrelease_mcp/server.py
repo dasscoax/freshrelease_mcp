@@ -17,6 +17,112 @@ mcp = FastMCP("freshrelease-mcp")
 
 FRESHRELEASE_API_KEY = os.getenv("FRESHRELEASE_API_KEY")
 FRESHRELEASE_DOMAIN = os.getenv("FRESHRELEASE_DOMAIN")
+FRESHRELEASE_PROJECT_KEY = os.getenv("FRESHRELEASE_PROJECT_KEY")
+
+
+def get_project_identifier(project_identifier: Optional[Union[int, str]] = None) -> Union[int, str]:
+    """Get project identifier from parameter or environment variable.
+    
+    Args:
+        project_identifier: Project identifier passed to function
+        
+    Returns:
+        Project identifier from parameter or environment variable
+        
+    Raises:
+        ValueError: If no project identifier is provided and FRESHRELEASE_PROJECT_KEY is not set
+    """
+    if project_identifier is not None:
+        return project_identifier
+    
+    if FRESHRELEASE_PROJECT_KEY:
+        return FRESHRELEASE_PROJECT_KEY
+    
+    raise ValueError("No project identifier provided and FRESHRELEASE_PROJECT_KEY environment variable is not set")
+
+
+def validate_environment() -> Dict[str, str]:
+    """Validate required environment variables are set.
+    
+    Returns:
+        Dictionary with base_url and headers if valid
+        
+    Raises:
+        ValueError: If required environment variables are missing
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        raise ValueError("FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set")
+    
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    return {"base_url": base_url, "headers": headers}
+
+
+async def make_api_request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    json_data: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Make an API request with standardized error handling.
+    
+    Args:
+        client: HTTP client instance
+        method: HTTP method (GET, POST, PUT, etc.)
+        url: Request URL
+        headers: Request headers
+        json_data: JSON payload for POST/PUT requests
+        params: Query parameters
+        
+    Returns:
+        API response as dictionary
+        
+    Raises:
+        httpx.HTTPStatusError: For HTTP errors
+        Exception: For other errors
+    """
+    try:
+        if method.upper() == "GET":
+            response = await client.get(url, headers=headers, params=params)
+        elif method.upper() == "POST":
+            response = await client.post(url, headers=headers, json=json_data, params=params)
+        elif method.upper() == "PUT":
+            response = await client.put(url, headers=headers, json=json_data, params=params)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        error_details = e.response.json() if e.response else None
+        raise httpx.HTTPStatusError(
+            f"API request failed: {str(e)}", 
+            request=e.request, 
+            response=e.response
+        ) from e
+    except Exception as e:
+        raise Exception(f"Unexpected error during API request: {str(e)}") from e
+
+
+def create_error_response(error_msg: str, details: Any = None) -> Dict[str, Any]:
+    """Create standardized error response.
+    
+    Args:
+        error_msg: Error message
+        details: Additional error details
+        
+    Returns:
+        Standardized error response dictionary
+    """
+    response = {"error": error_msg}
+    if details is not None:
+        response["details"] = details
+    return response
 
 
 def parse_link_header(link_header: str) -> Dict[str, Optional[int]]:
@@ -71,62 +177,69 @@ class TASK_STATUS(str, Enum):
 
 @mcp.tool()
 async def fr_create_project(name: str, description: Optional[str] = None) -> Dict[str, Any]:
-    """Create a project in Freshrelease."""
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    """Create a project in Freshrelease.
+    
+    Args:
+        name: Project name (required)
+        description: Project description (optional)
+        
+    Returns:
+        Created project data or error response
+    """
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
     url = f"{base_url}/projects"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
     payload: Dict[str, Any] = {"name": name}
     if description is not None:
         payload["description"] = description
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "POST", url, headers, json_data=payload)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to create project: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to create project: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 
 @mcp.tool()
-async def fr_get_project(project_identifier: Union[int, str]) -> Dict[str, Any]:
+async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get a project from Freshrelease by ID or key.
 
-    - project_identifier: numeric ID (e.g., 123) or key (e.g., "ENG")
+    Args:
+        project_identifier: numeric ID (e.g., 123) or key (e.g., "ENG") (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        
+    Returns:
+        Project data or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/projects/{project_identifier}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    url = f"{base_url}/projects/{project_id}"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch project: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to fetch project: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 
 @mcp.tool()
 async def fr_create_task(
-    project_identifier: Union[int, str],
     title: str,
+    project_identifier: Optional[Union[int, str]] = None,
     description: Optional[str] = None,
     assignee_id: Optional[int] = None,
     status: Optional[Union[str, TASK_STATUS]] = None,
@@ -137,25 +250,29 @@ async def fr_create_task(
 ) -> Dict[str, Any]:
     """Create a task under a Freshrelease project.
 
-    - due_date: ISO 8601 date string (e.g., 2025-12-31) if supported by your account
-    - issue_type_name: case-insensitive issue type key (e.g., "epic", "task").
-      Resolved to an `issue_type_id` via `/project_issue_types` and added to payload.
-    - user: optional name or email. If provided and `assignee_id` is not,
-      resolves to a user id via `/{project_identifier}/users?q=...` and sets `assignee_id`.
-    - additional_fields: arbitrary key/value pairs to include in the request body
-      (unknown keys will be passed through to the API). Core fields
-      (title, description, assignee_id, status, due_date, issue_type_id) cannot be overridden.
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        title: Task title (required)
+        description: Task description (optional)
+        assignee_id: Assignee user ID (optional)
+        status: Task status (optional)
+        due_date: ISO 8601 date string (e.g., 2025-12-31) (optional)
+        issue_type_name: Issue type name (e.g., "epic", "task") - defaults to "task"
+        user: User name or email - resolves to assignee_id if assignee_id not provided
+        additional_fields: Additional fields to include in request body (optional)
+        
+    Returns:
+        Created task data or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/issues"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
+    # Build base payload
     payload: Dict[str, Any] = {"title": title}
     if description is not None:
         payload["description"] = description
@@ -166,154 +283,136 @@ async def fr_create_task(
     if due_date is not None:
         payload["due_date"] = due_date
 
-    # Merge any additional fields without allowing overrides of core fields
+    # Merge additional fields without allowing overrides of core fields
     if additional_fields:
         protected_keys = {"title", "description", "assignee_id", "status", "due_date", "issue_type_id"}
         for key, value in additional_fields.items():
-            if key in protected_keys:
-                continue
-            payload[key] = value
+            if key not in protected_keys:
+                payload[key] = value
 
-    # Use a single client for optional resolutions and the final POST
     async with httpx.AsyncClient() as client:
-        # Resolve issue_type_name -> issue_type_id via project_issue_types endpoint
-        name_to_resolve = (issue_type_name or "task")
-        if name_to_resolve:
-            issue_types_url = f"{base_url}/{project_identifier}/project_issue_types"
+        try:
+            # Resolve issue type name to ID
+            name_to_resolve = issue_type_name or "task"
             try:
-                it_resp = await client.get(issue_types_url, headers=headers)
-                it_resp.raise_for_status()
-                it_data = it_resp.json()
-                # Expecting structure with 'issue_types': [ { name, id, ... } ]
-                types_list = it_data.get("issue_types", []) if isinstance(it_data, dict) else []
-                target = name_to_resolve.strip().lower()
-                matched_id: Optional[int] = None
-                for t in types_list:
-                    name = str(t.get("name", "")).strip().lower()
-                    if name == target:
-                        matched_id = t.get("id")
-                        break
-                if matched_id is None:
-                    return {"error": f"Issue type '{name_to_resolve}' not found", "details": it_data}
-                payload["issue_type_id"] = matched_id
+                issue_type_id = await resolve_issue_type_name_to_id(
+                    client, base_url, project_id, headers, name_to_resolve
+                )
+                payload["issue_type_id"] = issue_type_id
+            except ValueError as e:
+                return create_error_response(str(e))
             except httpx.HTTPStatusError as e:
-                return {"error": f"Failed to resolve issue type: {str(e)}", "details": e.response.json() if e.response else None}
-            except Exception as e:
-                return {"error": f"An unexpected error occurred while resolving issue type: {str(e)}"}
+                return create_error_response(f"Failed to resolve issue type: {str(e)}", e.response.json() if e.response else None)
 
-        # Resolve user -> assignee_id if applicable
-        if ("assignee_id" not in payload) and user:
-            users_url = f"{base_url}/{project_identifier}/users"
-            params = {"q": user}
-            try:
-                u_resp = await client.get(users_url, headers=headers, params=params)
-                u_resp.raise_for_status()
-                users_data = u_resp.json()
-                chosen_id: Optional[int] = None
-                if isinstance(users_data, list) and users_data:
-                    lowered = user.strip().lower()
-                    # Prefer exact email match
-                    for item in users_data:
-                        email = str(item.get("email", "")).strip().lower()
-                        if email and email == lowered:
-                            chosen_id = item.get("id")
-                            break
-                    # Then exact name match
-                    if chosen_id is None:
-                        for item in users_data:
-                            name_val = str(item.get("name", "")).strip().lower()
-                            if name_val and name_val == lowered:
-                                chosen_id = item.get("id")
-                                break
-                    # Fallback to first result
-                    if chosen_id is None:
-                        chosen_id = users_data[0].get("id")
-                if chosen_id is None:
-                    return {"error": f"No users found matching '{user}'"}
-                payload["assignee_id"] = chosen_id
-            except httpx.HTTPStatusError as e:
-                return {"error": f"Failed to resolve user: {str(e)}", "details": e.response.json() if e.response else None}
-            except Exception as e:
-                return {"error": f"An unexpected error occurred while resolving user: {str(e)}"}
+            # Resolve user to assignee_id if applicable
+            if "assignee_id" not in payload and user:
+                try:
+                    assignee_id = await resolve_user_to_assignee_id(
+                        client, base_url, project_id, headers, user
+                    )
+                    payload["assignee_id"] = assignee_id
+                except ValueError as e:
+                    return create_error_response(str(e))
+                except httpx.HTTPStatusError as e:
+                    return create_error_response(f"Failed to resolve user: {str(e)}", e.response.json() if e.response else None)
 
-        try:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+            # Create the task
+            url = f"{base_url}/{project_id}/issues"
+            return await make_api_request(client, "POST", url, headers, json_data=payload)
+
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to create task: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to create task: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 
 @mcp.tool()
-async def fr_get_task(project_identifier: Union[int, str], key: Union[int, str]) -> Dict[str, Any]:
-    """Get a task from Freshrelease by ID."""
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key: Union[int, str] = None) -> Dict[str, Any]:
+    """Get a task from Freshrelease by ID or key.
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        key: Task ID or key (required)
+        
+    Returns:
+        Task data or error response
+    """
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/issues/{key}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if key is None:
+        return create_error_response("key is required")
+
+    url = f"{base_url}/{project_id}/issues/{key}"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch task: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to fetch task: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_get_all_tasks(project_identifier: Union[int, str]) -> Dict[str, Any]:
-    """Get a task from Freshrelease by ID."""
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
+    """Get all tasks/issues for a project.
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        
+    Returns:
+        List of tasks or error response
+    """
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/issues"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    url = f"{base_url}/{project_id}/issues"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch task: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to fetch tasks: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_get_issue_type_by_name(project_identifier: Union[int, str], issue_type_name: str) -> Dict[str, Any]:
+async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]] = None, issue_type_name: str = None) -> Dict[str, Any]:
     """Fetch the issue type object for a given human name within a project.
 
-    This function lists issue types under the specified project and returns the
-    first match by case-insensitive name comparison.
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        issue_type_name: Issue type name to search for (required)
+        
+    Returns:
+        Issue type data or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/issue_types"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if issue_type_name is None:
+        return create_error_response("issue_type_name is required")
+
+    url = f"{base_url}/{project_id}/issue_types"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            data = await make_api_request(client, "GET", url, headers)
             # Expecting a list of objects with a 'name' property
             if isinstance(data, list):
                 target = issue_type_name.strip().lower()
@@ -321,39 +420,45 @@ async def fr_get_issue_type_by_name(project_identifier: Union[int, str], issue_t
                     name = str(item.get("name", "")).strip().lower()
                     if name == target:
                         return item
-                return {"error": f"Issue type '{issue_type_name}' not found"}
-            return {"error": "Unexpected response structure for issue types", "details": data}
+                return create_error_response(f"Issue type '{issue_type_name}' not found")
+            return create_error_response("Unexpected response structure for issue types", data)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch issue types: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to fetch issue types: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_search_users(project_identifier: Union[int, str], search_text: str) -> Any:
+async def fr_search_users(project_identifier: Optional[Union[int, str]] = None, search_text: str = None) -> Any:
     """Search users in a project by name or email.
 
-    Calls `/{project_identifier}/users?q=search_text` and returns the JSON response.
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        search_text: Text to search for in user names or emails (required)
+        
+    Returns:
+        List of matching users or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/users"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if search_text is None:
+        return create_error_response("search_text is required")
+
+    url = f"{base_url}/{project_id}/users"
     params = {"q": search_text}
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers, params=params)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to search users: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to search users: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 async def issue_ids_from_keys(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], issue_keys: List[Union[str, int]]) -> List[int]:
     resolved: List[int] = []
@@ -376,6 +481,96 @@ async def testcase_id_from_key(client: httpx.AsyncClient, base_url: str, project
     if isinstance(data, dict) and "id" in data:
         return int(data["id"])
     raise httpx.HTTPStatusError("Unexpected test case response structure", request=resp.request, response=resp)
+
+async def resolve_user_to_assignee_id(
+    client: httpx.AsyncClient, 
+    base_url: str, 
+    project_identifier: Union[int, str], 
+    headers: Dict[str, str], 
+    user: str
+) -> int:
+    """Resolve user name or email to assignee ID.
+    
+    Args:
+        client: HTTP client instance
+        base_url: API base URL
+        project_identifier: Project identifier
+        headers: Request headers
+        user: User name or email to resolve
+        
+    Returns:
+        Resolved user ID
+        
+    Raises:
+        ValueError: If no matching user found
+        httpx.HTTPStatusError: For API errors
+    """
+    users_url = f"{base_url}/{project_identifier}/users"
+    params = {"q": user}
+    
+    response = await client.get(users_url, headers=headers, params=params)
+    response.raise_for_status()
+    users_data = response.json()
+    
+    if not isinstance(users_data, list) or not users_data:
+        raise ValueError(f"No users found matching '{user}'")
+    
+    lowered = user.strip().lower()
+    
+    # Prefer exact email match
+    for item in users_data:
+        email = str(item.get("email", "")).strip().lower()
+        if email and email == lowered:
+            return item.get("id")
+    
+    # Then exact name match
+    for item in users_data:
+        name_val = str(item.get("name", "")).strip().lower()
+        if name_val and name_val == lowered:
+            return item.get("id")
+    
+    # Fallback to first result
+    return users_data[0].get("id")
+
+
+async def resolve_issue_type_name_to_id(
+    client: httpx.AsyncClient,
+    base_url: str,
+    project_identifier: Union[int, str],
+    headers: Dict[str, str],
+    issue_type_name: str
+) -> int:
+    """Resolve issue type name to ID.
+    
+    Args:
+        client: HTTP client instance
+        base_url: API base URL
+        project_identifier: Project identifier
+        headers: Request headers
+        issue_type_name: Issue type name to resolve
+        
+    Returns:
+        Resolved issue type ID
+        
+    Raises:
+        ValueError: If issue type not found
+        httpx.HTTPStatusError: For API errors
+    """
+    issue_types_url = f"{base_url}/{project_identifier}/project_issue_types"
+    response = await client.get(issue_types_url, headers=headers)
+    response.raise_for_status()
+    it_data = response.json()
+    
+    types_list = it_data.get("issue_types", []) if isinstance(it_data, dict) else []
+    target = issue_type_name.strip().lower()
+    
+    for t in types_list:
+        name = str(t.get("name", "")).strip().lower()
+        if name == target:
+            return t.get("id")
+    
+    raise ValueError(f"Issue type '{issue_type_name}' not found")
+
 
 async def resolve_section_hierarchy_to_ids(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], section_path: str) -> List[int]:
     """Resolve a section hierarchy path like 'section > sub-section > sub-sub-section' to section IDs.
@@ -437,240 +632,245 @@ async def resolve_section_hierarchy_to_ids(client: httpx.AsyncClient, base_url: 
     return find_sections_by_path(root_sections, path_parts)
 
 @mcp.tool()
-async def fr_list_testcases(project_identifier: Union[int, str]) -> Any:
+async def fr_list_testcases(project_identifier: Optional[Union[int, str]] = None) -> Any:
     """List all test cases in a project.
 
-    Calls `GET /{project_identifier}/test_cases` and returns the JSON response.
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        
+    Returns:
+        List of test cases or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/test_cases"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    url = f"{base_url}/{project_id}/test_cases"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to list test cases: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to list test cases: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_get_testcase(project_identifier: Union[int, str], test_case_key: Union[str, int]) -> Any:
-    """Get a specific test case by key.
+async def fr_get_testcase(project_identifier: Optional[Union[int, str]] = None, test_case_key: Union[str, int] = None) -> Any:
+    """Get a specific test case by key or ID.
 
-    Calls `GET /{project_identifier}/test_cases/{test_case_key}` and returns the JSON response.
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        test_case_key: Test case key or ID (required)
+        
+    Returns:
+        Test case data or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    url = f"{base_url}/{project_identifier}/test_cases/{test_case_key}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if test_case_key is None:
+        return create_error_response("test_case_key is required")
+
+    url = f"{base_url}/{project_id}/test_cases/{test_case_key}"
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            return await make_api_request(client, "GET", url, headers)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to get test case: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to get test case: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_link_testcase_issues(project_identifier: Union[int, str], testcase_keys: List[Union[str, int]], issue_keys: List[Union[str, int]]) -> Any:
+async def fr_link_testcase_issues(project_identifier: Optional[Union[int, str]] = None, testcase_keys: List[Union[str, int]] = None, issue_keys: List[Union[str, int]] = None) -> Any:
     """Bulk update multiple test cases with issue links by keys.
 
-    - Resolves `testcase_keys[]` via `GET /{project_identifier}/test_cases/{key}` to ids
-    - Resolves `issue_keys[]` via `GET /{project_identifier}/issues/{key}` to ids
-    - Performs: PUT `/{project_identifier}/test_cases/update_many` with body
-      { "ids": [...], "test_case": { "issue_ids": [...] } }
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        testcase_keys: List of test case keys/IDs to link (required)
+        issue_keys: List of issue keys/IDs to link to test cases (required)
+        
+    Returns:
+        Update result or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if testcase_keys is None or issue_keys is None:
+        return create_error_response("testcase_keys and issue_keys are required")
 
     async with httpx.AsyncClient() as client:
         try:
             # Resolve testcase keys to ids
             resolved_testcase_ids: List[int] = []
             for key in testcase_keys:
-                resolved_testcase_ids.append(await testcase_id_from_key(client, base_url, project_identifier, headers, key))
+                resolved_testcase_ids.append(await testcase_id_from_key(client, base_url, project_id, headers, key))
+            
             # Resolve issue keys to ids
-            resolved_issue_ids = await issue_ids_from_keys(client, base_url, project_identifier, headers, issue_keys)
-            url = f"{base_url}/{project_identifier}/test_cases/update_many"
+            resolved_issue_ids = await issue_ids_from_keys(client, base_url, project_id, headers, issue_keys)
+            
+            # Perform bulk update
+            url = f"{base_url}/{project_id}/test_cases/update_many"
             payload = {"ids": resolved_testcase_ids, "test_case": {"issue_ids": resolved_issue_ids}}
-            response = await client.put(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+            
+            return await make_api_request(client, "PUT", url, headers, json_data=payload)
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to bulk update testcases: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to bulk update testcases: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
-async def fr_get_testcases_by_section(project_identifier: Union[int, str], section_name: str) -> Any:
+async def fr_get_testcases_by_section(project_identifier: Optional[Union[int, str]] = None, section_name: str = None) -> Any:
     """Get test cases that belong to a section (by name) and its sub-sections.
 
-    Steps:
-    1) GET /{project_identifier}/sections → find section id by case-insensitive name
-    2) GET /{project_identifier}/test_cases?section_subtree_ids[]=SECTION_ID
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        section_name: Section name to search for (required)
+        
+    Returns:
+        List of test cases in the section or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if section_name is None:
+        return create_error_response("section_name is required")
 
     async with httpx.AsyncClient() as client:
-        # 1) Fetch sections and find matching id(s)
-        sections_url = f"{base_url}/{project_identifier}/sections"
         try:
-            s_resp = await client.get(sections_url, headers=headers)
-            s_resp.raise_for_status()
-            sections = s_resp.json()
-        except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch sections: {str(e)}", "details": e.response.json() if e.response else None}
-        except Exception as e:
-            return {"error": f"An unexpected error occurred while fetching sections: {str(e)}"}
+            # 1) Fetch sections and find matching id(s)
+            sections_url = f"{base_url}/{project_id}/sections"
+            sections = await make_api_request(client, "GET", sections_url, headers)
 
-        target = section_name.strip().lower()
-        matched_ids: List[int] = []
-        if isinstance(sections, list):
-            for sec in sections:
-                name_val = str(sec.get("name", "")).strip().lower()
-                if name_val == target:
-                    sec_id = sec.get("id")
-                    if isinstance(sec_id, int):
-                        matched_ids.append(sec_id)
-        else:
-            return {"error": "Unexpected sections response structure", "details": sections}
+            target = section_name.strip().lower()
+            matched_ids: List[int] = []
+            if isinstance(sections, list):
+                for sec in sections:
+                    name_val = str(sec.get("name", "")).strip().lower()
+                    if name_val == target:
+                        sec_id = sec.get("id")
+                        if isinstance(sec_id, int):
+                            matched_ids.append(sec_id)
+            else:
+                return create_error_response("Unexpected sections response structure", sections)
 
-        if not matched_ids:
-            return {"error": f"Section named '{section_name}' not found"}
+            if not matched_ids:
+                return create_error_response(f"Section named '{section_name}' not found")
 
-        # 2) Fetch test cases for each matched section subtree and merge results
-        testcases_url = f"{base_url}/{project_identifier}/test_cases"
-        all_results: List[Any] = []
-        try:
+            # 2) Fetch test cases for each matched section subtree and merge results
+            testcases_url = f"{base_url}/{project_id}/test_cases"
+            all_results: List[Any] = []
+            
             for sid in matched_ids:
                 params = [("section_subtree_ids[]", str(sid))]
-                t_resp = await client.get(testcases_url, headers=headers, params=params)
-                t_resp.raise_for_status()
-                data = t_resp.json()
+                data = await make_api_request(client, "GET", testcases_url, headers, params=params)
                 if isinstance(data, list):
                     all_results.extend(data)
                 else:
                     # If API returns an object, append as-is for transparency
                     all_results.append(data)
-        except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to fetch test cases for section: {str(e)}", "details": e.response.json() if e.response else None}
-        except Exception as e:
-            return {"error": f"An unexpected error occurred while fetching test cases: {str(e)}"}
 
-        return all_results
+            return all_results
+
+        except httpx.HTTPStatusError as e:
+            return create_error_response(f"Failed to fetch test cases for section: {str(e)}", e.response.json() if e.response else None)
+        except Exception as e:
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
 async def fr_add_testcases_to_testrun(
-    project_identifier: Union[int, str], 
-    test_run_id: Union[int, str],
-    test_case_keys: List[Union[str, int]],
+    project_identifier: Optional[Union[int, str]] = None, 
+    test_run_id: Union[int, str] = None,
+    test_case_keys: Optional[List[Union[str, int]]] = None,
     section_hierarchy_paths: Optional[List[str]] = None,
     section_subtree_ids: Optional[List[Union[str, int]]] = None,
     section_ids: Optional[List[Union[str, int]]] = None,
-    filter_rule: Optional[List[Any]] = None
+    filter_rule: Optional[List[Dict[str, Any]]] = None
 ) -> Any:
     """Add test cases to a test run by resolving test case keys to IDs and section hierarchies to IDs.
 
-    - Resolves each `test_case_keys[]` via `GET /{project_identifier}/test_cases/{key}` to get the `id`
-    - Resolves each `section_hierarchy_paths[]` (format: "section > sub-section > sub-sub-section") to section IDs
-    - Calls `PUT /{project_identifier}/test_runs/{test_run_id}/test_cases` with payload:
-    {
-        "filter_rule": [...],
-        "test_case_ids": [...],
-        "section_subtree_ids": [...],
-        "section_ids": [...]
-    }
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        test_run_id: Test run ID (required)
+        test_case_keys: List of test case keys/IDs to add (optional)
+        section_hierarchy_paths: List of section hierarchy paths like "Parent > Child" (optional)
+        section_subtree_ids: List of section subtree IDs (optional)
+        section_ids: List of section IDs (optional)
+        filter_rule: Filter rules for test case selection (optional)
+        
+    Returns:
+        Test run update result or error response
     """
-    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
-        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
 
-    base_url = f"https://{FRESHRELEASE_DOMAIN}"
-    headers = {
-        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    if test_run_id is None:
+        return create_error_response("test_run_id is required")
 
     async with httpx.AsyncClient() as client:
-        # Resolve test case keys to IDs
-        resolved_test_case_ids: List[str] = []
-        for key in test_case_keys:
-            try:
-                tc_url = f"{base_url}/{project_identifier}/test_cases/{key}"
-                tc_resp = await client.get(tc_url, headers=headers)
-                tc_resp.raise_for_status()
-                tc_data = tc_resp.json()
-                if isinstance(tc_data, dict) and "id" in tc_data:
-                    resolved_test_case_ids.append(str(tc_data["id"]))
-                else:
-                    return {"error": f"Unexpected test case response structure for key '{key}'", "details": tc_data}
-            except httpx.HTTPStatusError as e:
-                return {"error": f"Failed to resolve test case key '{key}': {str(e)}", "details": e.response.json() if e.response else None}
-            except Exception as e:
-                return {"error": f"An unexpected error occurred while resolving test case key '{key}': {str(e)}"}
-
-        # Resolve section hierarchy paths to IDs
-        resolved_section_subtree_ids: List[str] = []
-        if section_hierarchy_paths:
-            for path in section_hierarchy_paths:
-                try:
-                    section_ids_from_path = await resolve_section_hierarchy_to_ids(client, base_url, project_identifier, headers, path)
-                    resolved_section_subtree_ids.extend([str(sid) for sid in section_ids_from_path])
-                except httpx.HTTPStatusError as e:
-                    return {"error": f"Failed to resolve section hierarchy path '{path}': {str(e)}", "details": e.response.json() if e.response else None}
-                except Exception as e:
-                    return {"error": f"An unexpected error occurred while resolving section hierarchy path '{path}': {str(e)}"}
-
-        # Combine resolved section subtree IDs with any provided directly
-        all_section_subtree_ids = resolved_section_subtree_ids + [str(sid) for sid in (section_subtree_ids or [])]
-
-        # Build payload with resolved IDs
-        payload = {
-            "filter_rule": filter_rule or [],
-            "test_case_ids": resolved_test_case_ids,
-            "section_subtree_ids": all_section_subtree_ids,
-            "section_ids": [str(sid) for sid in (section_ids or [])]
-        }
-
-        # Make the PUT request
-        url = f"{base_url}/{project_identifier}/test_runs/{test_run_id}/test_cases"
         try:
-            response = await client.put(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+            # Resolve test case keys to IDs (if provided)
+            resolved_test_case_ids: List[str] = []
+            if test_case_keys:
+                for key in test_case_keys:
+                    tc_url = f"{base_url}/{project_id}/test_cases/{key}"
+                    tc_data = await make_api_request(client, "GET", tc_url, headers)
+                    if isinstance(tc_data, dict) and "id" in tc_data:
+                        resolved_test_case_ids.append(str(tc_data["id"]))
+                    else:
+                        return create_error_response(f"Unexpected test case response structure for key '{key}'", tc_data)
+
+            # Resolve section hierarchy paths to IDs
+            resolved_section_subtree_ids: List[str] = []
+            if section_hierarchy_paths:
+                for path in section_hierarchy_paths:
+                    section_ids_from_path = await resolve_section_hierarchy_to_ids(client, base_url, project_id, headers, path)
+                    resolved_section_subtree_ids.extend([str(sid) for sid in section_ids_from_path])
+
+            # Combine resolved section subtree IDs with any provided directly
+            all_section_subtree_ids = resolved_section_subtree_ids + [str(sid) for sid in (section_subtree_ids or [])]
+
+            # Build payload with resolved IDs
+            payload = {
+                "filter_rule": filter_rule or [],
+                "test_case_ids": resolved_test_case_ids,
+                "section_subtree_ids": all_section_subtree_ids,
+                "section_ids": [str(sid) for sid in (section_ids or [])]
+            }
+
+            # Make the PUT request
+            url = f"{base_url}/{project_id}/test_runs/{test_run_id}/test_cases"
+            return await make_api_request(client, "PUT", url, headers, json_data=payload)
+
         except httpx.HTTPStatusError as e:
-            return {"error": f"Failed to add test cases to test run: {str(e)}", "details": e.response.json() if e.response else None}
+            return create_error_response(f"Failed to add test cases to test run: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
-            return {"error": f"An unexpected error occurred: {str(e)}"}
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 def main():
     logging.info("Starting Freshdesk MCP server")
