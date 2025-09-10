@@ -1173,6 +1173,169 @@ def _clear_resolution_cache() -> None:
     _resolution_cache.clear()
 
 
+# Cache for test case form data to avoid repeated API calls
+_testcase_form_cache: Dict[str, Dict[str, Any]] = {}
+
+
+async def _get_testcase_form_data(project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
+    """Get test case form data with caching.
+    
+    Args:
+        project_id: Project ID
+        client: HTTP client
+        base_url: Base URL
+        headers: Request headers
+        
+    Returns:
+        Form data dictionary
+    """
+    if project_id not in _testcase_form_cache:
+        try:
+            url = f"{base_url}/{project_id}/test_cases/form"
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            _testcase_form_cache[project_id] = response.json()
+        except Exception:
+            _testcase_form_cache[project_id] = {}
+    
+    return _testcase_form_cache[project_id]
+
+
+async def _resolve_name_to_id_generic(
+    name: str, 
+    project_id: str, 
+    client: httpx.AsyncClient, 
+    base_url: str, 
+    headers: Dict[str, str],
+    resolution_type: str
+) -> Optional[str]:
+    """Generic function to resolve names to IDs for test case filtering.
+    
+    Args:
+        name: Name to resolve
+        project_id: Project ID
+        client: HTTP client
+        base_url: Base URL
+        headers: Request headers
+        resolution_type: Type of resolution (section, type, tag, issue)
+        
+    Returns:
+        Resolved ID or None if not found
+    """
+    try:
+        if resolution_type == "section":
+            url = f"{base_url}/{project_id}/sections"
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("sections", [])
+            key_field = "name"
+            id_field = "id"
+            
+        elif resolution_type == "type":
+            form_data = await _get_testcase_form_data(project_id, client, base_url, headers)
+            items = form_data.get("test_case_types", [])
+            key_field = "name"
+            id_field = "id"
+            
+        elif resolution_type == "tag":
+            url = f"{base_url}/{project_id}/tags"
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("tags", [])
+            key_field = "name"
+            id_field = "id"
+            
+        elif resolution_type == "issue":
+            url = f"{base_url}/{project_id}/issues/{name}"
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if "issue" in data:
+                return str(data["issue"]["id"])
+            return None
+            
+        else:
+            return None
+        
+        # Find item by name (case-insensitive)
+        for item in items:
+            if item.get(key_field, "").lower() == name.lower():
+                return str(item[id_field])
+        
+        return None
+        
+    except Exception:
+        return None
+
+
+async def _resolve_custom_field_value_optimized(
+    field_name: str, 
+    field_value: str, 
+    project_id: str, 
+    client: httpx.AsyncClient, 
+    base_url: str, 
+    headers: Dict[str, str]
+) -> str:
+    """Optimized custom field value resolution with caching.
+    
+    Args:
+        field_name: Name of the custom field
+        field_value: Value to resolve
+        project_id: Project ID
+        client: HTTP client
+        base_url: Base URL
+        headers: Request headers
+        
+    Returns:
+        Resolved value ID or original value if not found
+    """
+    try:
+        form_data = await _get_testcase_form_data(project_id, client, base_url, headers)
+        custom_fields = form_data.get("custom_fields", [])
+        
+        # Find custom field by name
+        for field in custom_fields:
+            if field.get("name", "").lower() == field_name.lower():
+                options = field.get("options", [])
+                for option in options:
+                    if option.get("name", "").lower() == field_value.lower():
+                        return str(option["id"])
+                break
+        
+        return field_value  # Return original value if not found
+        
+    except Exception:
+        return field_value
+
+
+# Convenience functions for backward compatibility
+async def _resolve_section_name_to_id(section_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
+    """Resolve section name to ID for test case filtering."""
+    return await _resolve_name_to_id_generic(section_name, project_id, client, base_url, headers, "section")
+
+
+async def _resolve_testcase_type_name_to_id(type_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
+    """Resolve test case type name to ID for test case filtering."""
+    return await _resolve_name_to_id_generic(type_name, project_id, client, base_url, headers, "type")
+
+
+async def _resolve_issue_key_to_id(issue_key: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
+    """Resolve issue key to ID for test case filtering."""
+    return await _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issue")
+
+
+async def _resolve_tag_name_to_id(tag_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
+    """Resolve tag name to ID for test case filtering."""
+    return await _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tag")
+
+
+async def _resolve_custom_field_value(field_name: str, field_value: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> str:
+    """Resolve custom field value to ID for test case filtering."""
+    return await _resolve_custom_field_value_optimized(field_name, field_value, project_id, client, base_url, headers)
+
+
 def _build_query_hash_from_params(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build query_hash from resolved parameters for saving filters.
     
@@ -1836,6 +1999,259 @@ async def fr_save_filter(
 
 
 @mcp.tool()
+@performance_monitor("fr_filter_testcases")
+async def fr_filter_testcases(
+    project_identifier: Optional[Union[int, str]] = None,
+    filter_rules: Optional[List[Dict[str, Any]]] = None,
+    _env_data: Optional[Dict[str, str]] = None
+) -> Any:
+    """Filter test cases using filter rules with automatic name-to-ID resolution.
+    
+    This tool allows you to filter test cases by various criteria like section, severity, type, and linked issues.
+    It automatically resolves names to IDs for:
+    - section_id: Resolves section names to IDs
+    - type_id: Resolves test case type names to IDs
+    - issue_ids: Resolves issue keys to IDs
+    - tags: Resolves tag names to IDs
+    - Custom fields: Resolves custom field values to IDs
+    
+    Use fr_get_testcase_form_fields to get available fields and their possible values for filtering.
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        filter_rules: List of filter rule objects with condition, operator, and value
+                     Example: [{"condition": "section_id", "operator": "is", "value": "My Section"}]
+    
+    Returns:
+        Filtered list of test cases or error response
+        
+    Example:
+        # Filter by section name (automatically resolved to ID)
+        test_cases = fr_filter_testcases(
+            filter_rules=[{"condition": "section_id", "operator": "is", "value": "Authentication"}]
+        )
+        
+        # Filter by test case type name and severity
+        test_cases = fr_filter_testcases(
+            filter_rules=[
+                {"condition": "type_id", "operator": "is", "value": "Functional Test"},
+                {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]}
+            ]
+        )
+        
+        # Filter by linked issue keys (automatically resolved to IDs)
+        test_cases = fr_filter_testcases(
+            filter_rules=[{"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}]
+        )
+        
+        # Filter by tag names (automatically resolved to IDs)
+        test_cases = fr_filter_testcases(
+            filter_rules=[{"condition": "tags", "operator": "is_in", "value": ["smoke", "regression"]}]
+        )
+    """
+    try:
+        project_id = get_project_identifier(project_identifier, _env_data)
+        base_url = _env_data["base_url"]
+        headers = _env_data["headers"]
+        client = get_http_client()
+
+        # Process and resolve filter rules with optimized batch resolution
+        resolved_rules = []
+        if filter_rules:
+            # Group resolution tasks by type for batch processing
+            resolution_tasks = {
+                "section": [],
+                "type": [],
+                "issue": [],
+                "tag": [],
+                "custom": []
+            }
+            
+            # Collect all resolution tasks
+            for i, rule in enumerate(filter_rules):
+                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                    condition = rule["condition"]
+                    value = rule["value"]
+                    
+                    if condition == "section_id" and isinstance(value, str):
+                        resolution_tasks["section"].append((i, value))
+                    elif condition == "type_id" and isinstance(value, str):
+                        resolution_tasks["type"].append((i, value))
+                    elif condition == "issue_ids" and isinstance(value, (list, str)):
+                        if isinstance(value, str):
+                            value = [value]
+                        for issue_key in value:
+                            resolution_tasks["issue"].append((i, issue_key))
+                    elif condition == "tags" and isinstance(value, (list, str)):
+                        if isinstance(value, str):
+                            value = [value]
+                        for tag_name in value:
+                            resolution_tasks["tag"].append((i, tag_name))
+                    elif condition.startswith("cf_") and isinstance(value, (list, str)):
+                        field_name = condition[3:]
+                        if isinstance(value, str):
+                            value = [value]
+                        for field_value in value:
+                            resolution_tasks["custom"].append((i, field_name, field_value))
+            
+            # Batch resolve all tasks
+            resolution_results = {}
+            
+            # Resolve sections
+            if resolution_tasks["section"]:
+                section_resolutions = await asyncio.gather(*[
+                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "section")
+                    for _, name in resolution_tasks["section"]
+                ], return_exceptions=True)
+                for (rule_idx, name), result in zip(resolution_tasks["section"], section_resolutions):
+                    if rule_idx not in resolution_results:
+                        resolution_results[rule_idx] = {}
+                    resolution_results[rule_idx]["section_id"] = result if not isinstance(result, Exception) else None
+            
+            # Resolve types
+            if resolution_tasks["type"]:
+                type_resolutions = await asyncio.gather(*[
+                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "type")
+                    for _, name in resolution_tasks["type"]
+                ], return_exceptions=True)
+                for (rule_idx, name), result in zip(resolution_tasks["type"], type_resolutions):
+                    if rule_idx not in resolution_results:
+                        resolution_results[rule_idx] = {}
+                    resolution_results[rule_idx]["type_id"] = result if not isinstance(result, Exception) else None
+            
+            # Resolve issues
+            if resolution_tasks["issue"]:
+                issue_resolutions = await asyncio.gather(*[
+                    _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issue")
+                    for _, issue_key in resolution_tasks["issue"]
+                ], return_exceptions=True)
+                for (rule_idx, issue_key), result in zip(resolution_tasks["issue"], issue_resolutions):
+                    if rule_idx not in resolution_results:
+                        resolution_results[rule_idx] = {}
+                    if "issue_ids" not in resolution_results[rule_idx]:
+                        resolution_results[rule_idx]["issue_ids"] = []
+                    resolution_results[rule_idx]["issue_ids"].append(result if not isinstance(result, Exception) else issue_key)
+            
+            # Resolve tags
+            if resolution_tasks["tag"]:
+                tag_resolutions = await asyncio.gather(*[
+                    _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tag")
+                    for _, tag_name in resolution_tasks["tag"]
+                ], return_exceptions=True)
+                for (rule_idx, tag_name), result in zip(resolution_tasks["tag"], tag_resolutions):
+                    if rule_idx not in resolution_results:
+                        resolution_results[rule_idx] = {}
+                    if "tags" not in resolution_results[rule_idx]:
+                        resolution_results[rule_idx]["tags"] = []
+                    resolution_results[rule_idx]["tags"].append(result if not isinstance(result, Exception) else tag_name)
+            
+            # Resolve custom fields
+            if resolution_tasks["custom"]:
+                custom_resolutions = await asyncio.gather(*[
+                    _resolve_custom_field_value_optimized(field_name, field_value, project_id, client, base_url, headers)
+                    for _, field_name, field_value in resolution_tasks["custom"]
+                ], return_exceptions=True)
+                for (rule_idx, field_name, field_value), result in zip(resolution_tasks["custom"], custom_resolutions):
+                    if rule_idx not in resolution_results:
+                        resolution_results[rule_idx] = {}
+                    if f"cf_{field_name}" not in resolution_results[rule_idx]:
+                        resolution_results[rule_idx][f"cf_{field_name}"] = []
+                    resolution_results[rule_idx][f"cf_{field_name}"].append(result if not isinstance(result, Exception) else field_value)
+            
+            # Build resolved rules
+            for i, rule in enumerate(filter_rules):
+                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                    condition = rule["condition"]
+                    operator = rule["operator"]
+                    value = rule["value"]
+                    
+                    # Apply resolved values
+                    if condition == "section_id" and i in resolution_results and "section_id" in resolution_results[i]:
+                        resolved_id = resolution_results[i]["section_id"]
+                        if resolved_id:
+                            value = resolved_id
+                    elif condition == "type_id" and i in resolution_results and "type_id" in resolution_results[i]:
+                        resolved_id = resolution_results[i]["type_id"]
+                        if resolved_id:
+                            value = resolved_id
+                    elif condition == "issue_ids" and i in resolution_results and "issue_ids" in resolution_results[i]:
+                        value = resolution_results[i]["issue_ids"]
+                    elif condition == "tags" and i in resolution_results and "tags" in resolution_results[i]:
+                        value = resolution_results[i]["tags"]
+                    elif condition.startswith("cf_") and i in resolution_results and condition in resolution_results[i]:
+                        value = resolution_results[i][condition]
+                    
+                    resolved_rules.append({
+                        "condition": condition,
+                        "operator": operator,
+                        "value": value
+                    })
+
+        # Build filter_rule query parameters
+        params = {}
+        for i, rule in enumerate(resolved_rules):
+            params[f"filter_rule[{i}][condition]"] = rule["condition"]
+            params[f"filter_rule[{i}][operator]"] = rule["operator"]
+            params[f"filter_rule[{i}][value]"] = rule["value"]
+
+        # Get filtered test cases
+        url = f"{base_url}/{project_id}/test_cases"
+        return await make_api_request("GET", url, headers, params=params, client=client)
+
+    except Exception as e:
+        return create_error_response(f"Failed to filter test cases: {str(e)}")
+
+
+@mcp.tool()
+@performance_monitor("fr_get_testcase_form_fields")
+async def fr_get_testcase_form_fields(
+    project_identifier: Optional[Union[int, str]] = None,
+    _env_data: Optional[Dict[str, str]] = None
+) -> Any:
+    """Get available fields and their possible values for test case filtering.
+    
+    This tool returns the form fields that can be used in test case filter rules.
+    Use this to understand what fields are available and their possible values.
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+    
+    Returns:
+        Form fields data with available filter conditions and their possible values
+    """
+    try:
+        project_id = get_project_identifier(project_identifier, _env_data)
+        base_url = _env_data["base_url"]
+        headers = _env_data["headers"]
+        client = get_http_client()
+
+        # Get test case form fields
+        url = f"{base_url}/{project_id}/test_cases/form"
+        return await make_api_request("GET", url, headers, client=client)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get test case form fields: {str(e)}")
+
+
+@mcp.tool()
+async def fr_clear_testcase_form_cache() -> Any:
+    """Clear the test case form cache.
+    
+    This is useful when test case form fields are modified in Freshrelease
+    and you want to refresh the cache without restarting the server.
+    
+    Returns:
+        Success message or error response
+    """
+    try:
+        global _testcase_form_cache
+        _testcase_form_cache.clear()
+        return {"success": True, "message": "Test case form cache cleared successfully"}
+    except Exception as e:
+        return create_error_response(f"Failed to clear test case form cache: {str(e)}")
+
+
+@mcp.tool()
 async def fr_clear_all_caches() -> Any:
     """Clear all caches (custom fields, lookup data, and resolution cache).
     
@@ -1849,6 +2265,11 @@ async def fr_clear_all_caches() -> Any:
         _clear_custom_fields_cache()
         _clear_lookup_cache()
         _clear_resolution_cache()
+        
+        # Clear test case form cache
+        global _testcase_form_cache
+        _testcase_form_cache.clear()
+        
         return {"message": "All caches cleared successfully"}
     except Exception as e:
         return create_error_response(f"Failed to clear caches: {str(e)}")

@@ -41,8 +41,24 @@ The server offers several tools for Freshrelease operations:
 - `fr_search_users`: Search users by name or email within a project
   - Inputs: `project_identifier` (number|string, required), `search_text` (string, required)
 
+- `fr_list_testcases`: List all test cases in a project
+  - Inputs: `project_identifier` (number|string, optional)
+  - Notes: Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
+
+- `fr_get_testcase`: Get a specific test case by key or ID
+  - Inputs: `project_identifier` (number|string, optional), `test_case_key` (string|number, required)
+  - Notes: Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
+
+- `fr_get_testcases_by_section`: Get test cases within a section and its sub-sections
+  - Inputs: `project_identifier` (number|string, optional), `section_name` (string, required)
+  - Notes: Supports hierarchical section names like "Authentication > Login". Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
+
 - `fr_link_testcase_issues`: Bulk link issues to one or more testcases (using keys)
   - Inputs: `project_identifier` (number|string, required), `testcase_keys` (array of string|number), `issue_keys` (array of string|number)
+
+- `fr_add_testcases_to_testrun`: Add test cases to a test run
+  - Inputs: `project_identifier` (number|string, optional), `test_run_id` (number|string, required), `test_case_keys` (array of string|number, optional), `section_hierarchy_paths` (array of string, optional), `filter_rule` (array of object, optional)
+  - Notes: Adds test cases to a test run. Can specify test case keys, section hierarchy paths, or filter rules. Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
 
 - `fr_filter_tasks`: Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection
   - Inputs: `project_identifier` (number|string, optional), `query` (string|object, optional), `query_format` (string, optional), plus 19 standard field parameters
@@ -65,9 +81,35 @@ The server offers several tools for Freshrelease operations:
   - Inputs: None
   - Notes: Useful when you want to refresh resolved IDs without restarting the server.
 
-- `fr_clear_all_caches`: Clear all caches (custom fields, lookup data, and resolution cache)
+- `fr_clear_testcase_form_cache`: Clear the test case form cache
+  - Inputs: None
+  - Notes: Useful when test case form fields are modified in Freshrelease and you want to refresh the cache without restarting the server.
+
+- `fr_clear_all_caches`: Clear all caches (custom fields, lookup data, resolution cache, and test case form cache)
   - Inputs: None
   - Notes: Useful when you want to refresh all cached data without restarting the server.
+
+### Performance Monitoring
+- `fr_get_performance_stats`: Get performance statistics for all monitored functions
+  - Inputs: None
+  - Notes: Returns execution times and call counts for all functions with performance monitoring enabled.
+
+- `fr_clear_performance_stats`: Clear performance statistics
+  - Inputs: None
+  - Notes: Resets all performance counters and execution time data.
+
+- `fr_close_http_client`: Close the HTTP client connection
+  - Inputs: None
+  - Notes: Properly closes the HTTP client connection. Useful for cleanup before server shutdown.
+
+### Test Case Filtering
+- `fr_filter_testcases`: Filter test cases using filter rules with automatic name-to-ID resolution
+  - Inputs: `project_identifier` (number|string, optional), `filter_rules` (array of objects, optional)
+  - Notes: Filter test cases by section, severity, type, linked issues, tags, etc. Automatically resolves names to IDs for section_id, type_id, issue_ids, tags, and custom fields. Use fr_get_testcase_form_fields to get available fields and values.
+
+- `fr_get_testcase_form_fields`: Get available fields for test case filtering
+  - Inputs: `project_identifier` (number|string, optional)
+  - Notes: Returns form fields that can be used in test case filter rules. Use this to understand available filter conditions and their possible values.
 
 ### Lookup Functions
 - `fr_get_sprint_by_name`: Get sprint ID by name
@@ -231,6 +273,40 @@ fr_add_testcases_to_testrun(
     test_run_id=123,
     test_case_keys=["TC-001", "TC-002"],
     section_hierarchy_paths=["Authentication > Login", "Authentication > Registration"]
+)
+```
+
+### Test Case Filtering
+```python
+# Get available filter fields first
+form_fields = fr_get_testcase_form_fields()
+
+# Filter by section name (automatically resolved to ID)
+test_cases = fr_filter_testcases(
+    filter_rules=[{"condition": "section_id", "operator": "is", "value": "Authentication"}]
+)
+
+# Filter by test case type name and severity (type name automatically resolved)
+test_cases = fr_filter_testcases(
+    filter_rules=[
+        {"condition": "type_id", "operator": "is", "value": "Functional Test"},
+        {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]}
+    ]
+)
+
+# Filter by linked issue keys (automatically resolved to IDs)
+test_cases = fr_filter_testcases(
+    filter_rules=[{"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}]
+)
+
+# Filter by tag names (automatically resolved to IDs)
+test_cases = fr_filter_testcases(
+    filter_rules=[{"condition": "tags", "operator": "is_in", "value": ["smoke", "regression"]}]
+)
+
+# Filter by custom fields (values automatically resolved)
+test_cases = fr_filter_testcases(
+    filter_rules=[{"condition": "cf_priority", "operator": "is", "value": "Critical"}]
 )
 ```
 
