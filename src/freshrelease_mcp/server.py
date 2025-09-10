@@ -377,6 +377,117 @@ async def testcase_id_from_key(client: httpx.AsyncClient, base_url: str, project
         return int(data["id"])
     raise httpx.HTTPStatusError("Unexpected test case response structure", request=resp.request, response=resp)
 
+async def resolve_section_hierarchy_to_ids(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], section_path: str) -> List[int]:
+    """Resolve a section hierarchy path like 'section > sub-section > sub-sub-section' to section IDs.
+    
+    Returns list of IDs for all matching sections in the hierarchy.
+    """
+    # Split by '>' and strip whitespace
+    path_parts = [part.strip() for part in section_path.split('>')]
+    if not path_parts or not path_parts[0]:
+        return []
+    
+    # Fetch all sections
+    sections_url = f"{base_url}/{project_identifier}/sections"
+    resp = await client.get(sections_url, headers=headers)
+    resp.raise_for_status()
+    sections = resp.json()
+    
+    if not isinstance(sections, list):
+        raise httpx.HTTPStatusError("Unexpected sections response structure", request=resp.request, response=resp)
+    
+    # Build a hierarchy map: parent_id -> children
+    hierarchy: Dict[int, List[Dict[str, Any]]] = {}
+    root_sections: List[Dict[str, Any]] = []
+    
+    for section in sections:
+        parent_id = section.get("parent_id")
+        if parent_id is None:
+            root_sections.append(section)
+        else:
+            if parent_id not in hierarchy:
+                hierarchy[parent_id] = []
+            hierarchy[parent_id].append(section)
+    
+    # Recursive function to find sections by path
+    def find_sections_by_path(sections_list: List[Dict[str, Any]], remaining_path: List[str]) -> List[int]:
+        if not remaining_path:
+            return [s.get("id") for s in sections_list if isinstance(s.get("id"), int)]
+        
+        current_name = remaining_path[0].lower()
+        matching_sections = []
+        
+        for section in sections_list:
+            section_name = str(section.get("name", "")).strip().lower()
+            if section_name == current_name:
+                section_id = section.get("id")
+                if isinstance(section_id, int):
+                    if len(remaining_path) == 1:
+                        # This is the final level, return this section
+                        matching_sections.append(section_id)
+                    else:
+                        # Look in children for the next level
+                        children = hierarchy.get(section_id, [])
+                        child_matches = find_sections_by_path(children, remaining_path[1:])
+                        matching_sections.extend(child_matches)
+        
+        return matching_sections
+    
+    # Start from root sections
+    return find_sections_by_path(root_sections, path_parts)
+
+@mcp.tool()
+async def fr_list_testcases(project_identifier: Union[int, str]) -> Any:
+    """List all test cases in a project.
+
+    Calls `GET /{project_identifier}/test_cases` and returns the JSON response.
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/test_cases"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to list test cases: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
+@mcp.tool()
+async def fr_get_testcase(project_identifier: Union[int, str], test_case_key: Union[str, int]) -> Any:
+    """Get a specific test case by key.
+
+    Calls `GET /{project_identifier}/test_cases/{test_case_key}` and returns the JSON response.
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    url = f"{base_url}/{project_identifier}/test_cases/{test_case_key}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to get test case: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
 @mcp.tool()
 async def fr_link_testcase_issues(project_identifier: Union[int, str], testcase_keys: List[Union[str, int]], issue_keys: List[Union[str, int]]) -> Any:
     """Bulk update multiple test cases with issue links by keys.
@@ -410,6 +521,154 @@ async def fr_link_testcase_issues(project_identifier: Union[int, str], testcase_
             return response.json()
         except httpx.HTTPStatusError as e:
             return {"error": f"Failed to bulk update testcases: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred: {str(e)}"}
+
+@mcp.tool()
+async def fr_get_testcases_by_section(project_identifier: Union[int, str], section_name: str) -> Any:
+    """Get test cases that belong to a section (by name) and its sub-sections.
+
+    Steps:
+    1) GET /{project_identifier}/sections → find section id by case-insensitive name
+    2) GET /{project_identifier}/test_cases?section_subtree_ids[]=SECTION_ID
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # 1) Fetch sections and find matching id(s)
+        sections_url = f"{base_url}/{project_identifier}/sections"
+        try:
+            s_resp = await client.get(sections_url, headers=headers)
+            s_resp.raise_for_status()
+            sections = s_resp.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to fetch sections: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred while fetching sections: {str(e)}"}
+
+        target = section_name.strip().lower()
+        matched_ids: List[int] = []
+        if isinstance(sections, list):
+            for sec in sections:
+                name_val = str(sec.get("name", "")).strip().lower()
+                if name_val == target:
+                    sec_id = sec.get("id")
+                    if isinstance(sec_id, int):
+                        matched_ids.append(sec_id)
+        else:
+            return {"error": "Unexpected sections response structure", "details": sections}
+
+        if not matched_ids:
+            return {"error": f"Section named '{section_name}' not found"}
+
+        # 2) Fetch test cases for each matched section subtree and merge results
+        testcases_url = f"{base_url}/{project_identifier}/test_cases"
+        all_results: List[Any] = []
+        try:
+            for sid in matched_ids:
+                params = [("section_subtree_ids[]", str(sid))]
+                t_resp = await client.get(testcases_url, headers=headers, params=params)
+                t_resp.raise_for_status()
+                data = t_resp.json()
+                if isinstance(data, list):
+                    all_results.extend(data)
+                else:
+                    # If API returns an object, append as-is for transparency
+                    all_results.append(data)
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to fetch test cases for section: {str(e)}", "details": e.response.json() if e.response else None}
+        except Exception as e:
+            return {"error": f"An unexpected error occurred while fetching test cases: {str(e)}"}
+
+        return all_results
+
+@mcp.tool()
+async def fr_add_testcases_to_testrun(
+    project_identifier: Union[int, str], 
+    test_run_id: Union[int, str],
+    test_case_keys: List[Union[str, int]],
+    section_hierarchy_paths: Optional[List[str]] = None,
+    section_subtree_ids: Optional[List[Union[str, int]]] = None,
+    section_ids: Optional[List[Union[str, int]]] = None,
+    filter_rule: Optional[List[Any]] = None
+) -> Any:
+    """Add test cases to a test run by resolving test case keys to IDs and section hierarchies to IDs.
+
+    - Resolves each `test_case_keys[]` via `GET /{project_identifier}/test_cases/{key}` to get the `id`
+    - Resolves each `section_hierarchy_paths[]` (format: "section > sub-section > sub-sub-section") to section IDs
+    - Calls `PUT /{project_identifier}/test_runs/{test_run_id}/test_cases` with payload:
+    {
+        "filter_rule": [...],
+        "test_case_ids": [...],
+        "section_subtree_ids": [...],
+        "section_ids": [...]
+    }
+    """
+    if not FRESHRELEASE_DOMAIN or not FRESHRELEASE_API_KEY:
+        return {"error": "FRESHRELEASE_DOMAIN or FRESHRELEASE_API_KEY is not set"}
+
+    base_url = f"https://{FRESHRELEASE_DOMAIN}"
+    headers = {
+        "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Resolve test case keys to IDs
+        resolved_test_case_ids: List[str] = []
+        for key in test_case_keys:
+            try:
+                tc_url = f"{base_url}/{project_identifier}/test_cases/{key}"
+                tc_resp = await client.get(tc_url, headers=headers)
+                tc_resp.raise_for_status()
+                tc_data = tc_resp.json()
+                if isinstance(tc_data, dict) and "id" in tc_data:
+                    resolved_test_case_ids.append(str(tc_data["id"]))
+                else:
+                    return {"error": f"Unexpected test case response structure for key '{key}'", "details": tc_data}
+            except httpx.HTTPStatusError as e:
+                return {"error": f"Failed to resolve test case key '{key}': {str(e)}", "details": e.response.json() if e.response else None}
+            except Exception as e:
+                return {"error": f"An unexpected error occurred while resolving test case key '{key}': {str(e)}"}
+
+        # Resolve section hierarchy paths to IDs
+        resolved_section_subtree_ids: List[str] = []
+        if section_hierarchy_paths:
+            for path in section_hierarchy_paths:
+                try:
+                    section_ids_from_path = await resolve_section_hierarchy_to_ids(client, base_url, project_identifier, headers, path)
+                    resolved_section_subtree_ids.extend([str(sid) for sid in section_ids_from_path])
+                except httpx.HTTPStatusError as e:
+                    return {"error": f"Failed to resolve section hierarchy path '{path}': {str(e)}", "details": e.response.json() if e.response else None}
+                except Exception as e:
+                    return {"error": f"An unexpected error occurred while resolving section hierarchy path '{path}': {str(e)}"}
+
+        # Combine resolved section subtree IDs with any provided directly
+        all_section_subtree_ids = resolved_section_subtree_ids + [str(sid) for sid in (section_subtree_ids or [])]
+
+        # Build payload with resolved IDs
+        payload = {
+            "filter_rule": filter_rule or [],
+            "test_case_ids": resolved_test_case_ids,
+            "section_subtree_ids": all_section_subtree_ids,
+            "section_ids": [str(sid) for sid in (section_ids or [])]
+        }
+
+        # Make the PUT request
+        url = f"{base_url}/{project_identifier}/test_runs/{test_run_id}/test_cases"
+        try:
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            return {"error": f"Failed to add test cases to test run: {str(e)}", "details": e.response.json() if e.response else None}
         except Exception as e:
             return {"error": f"An unexpected error occurred: {str(e)}"}
 
