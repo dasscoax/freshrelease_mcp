@@ -411,12 +411,15 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
         base_url = env_data["base_url"]
         headers = env_data["headers"]
 
-    url = f"{base_url}/projects"
-    payload: Dict[str, Any] = {"name": name}
-    if description is not None:
-        payload["description"] = description
+        url = f"{base_url}/projects"
+        payload: Dict[str, Any] = {"name": name}
+        if description is not None:
+            payload["description"] = description
 
-    return await make_api_request("POST", url, headers, json_data=payload)
+        return await make_api_request("POST", url, headers, json_data=payload)
+
+    except Exception as e:
+        return create_error_response(f"Failed to create project: {str(e)}")
 
 
 @mcp.tool()
@@ -1885,7 +1888,6 @@ async def fr_get_subproject_by_name(
     return await _generic_lookup_by_name(project_identifier, subproject_name, "sub_projects", "subproject_name")
 
 
-@mcp.tool()
 async def fr_clear_filter_cache() -> Any:
     """Clear the custom fields cache for filter operations.
     
@@ -1902,7 +1904,6 @@ async def fr_clear_filter_cache() -> Any:
         return create_error_response(f"Failed to clear cache: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_lookup_cache() -> Any:
     """Clear the lookup cache for sprints, releases, tags, and subprojects.
     
@@ -1919,7 +1920,6 @@ async def fr_clear_lookup_cache() -> Any:
         return create_error_response(f"Failed to clear lookup cache: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_resolution_cache() -> Any:
     """Clear the resolution cache for name-to-ID lookups.
     
@@ -2242,7 +2242,6 @@ async def fr_get_testcase_form_fields(
         return create_error_response(f"Failed to get test case form fields: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_testcase_form_cache() -> Any:
     """Clear the test case form cache.
     
@@ -2260,7 +2259,6 @@ async def fr_clear_testcase_form_cache() -> Any:
         return create_error_response(f"Failed to clear test case form cache: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_all_caches() -> Any:
     """Clear all caches (custom fields, lookup data, and resolution cache).
     
@@ -2284,7 +2282,6 @@ async def fr_clear_all_caches() -> Any:
         return create_error_response(f"Failed to clear caches: {str(e)}")
 
 
-@mcp.tool()
 async def fr_get_performance_stats() -> Dict[str, Any]:
     """Get performance statistics for all monitored functions.
     
@@ -2298,7 +2295,6 @@ async def fr_get_performance_stats() -> Dict[str, Any]:
         return create_error_response(f"Failed to get performance stats: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_performance_stats() -> Dict[str, Any]:
     """Clear performance statistics.
     
@@ -2312,7 +2308,6 @@ async def fr_clear_performance_stats() -> Dict[str, Any]:
         return create_error_response(f"Failed to clear performance stats: {str(e)}")
 
 
-@mcp.tool()
 async def fr_close_http_client() -> Dict[str, Any]:
     """Close the global HTTP client to free resources.
     

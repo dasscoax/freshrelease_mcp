@@ -1,7 +1,21 @@
 # Freshrelease MCP Server
 
+[![PyPI version](https://badge.fury.io/py/freshrelease-mcp.svg)](https://badge.fury.io/py/freshrelease-mcp)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks.
+An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks through 20 powerful MCP tools.
+
+## Quick Reference
+
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Project Management** | 2 | Create and retrieve projects |
+| **Task Management** | 4 | Create, retrieve, and manage tasks/issues |
+| **User Management** | 1 | Search and resolve users |
+| **Test Case Management** | 6 | List, filter, and manage test cases |
+| **Filtering & Search** | 4 | Advanced filtering for tasks and test cases |
+| **Lookup Functions** | 4 | Resolve names to IDs for various entities |
+| **Total** | **20** | **Complete Freshrelease integration** |
 
 ## Features
 
@@ -15,16 +29,18 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 
 ## Components
 
-### Tools
+### MCP Tools (20 Available)
 
-The server offers several tools for Freshrelease operations:
+The server offers 20 MCP tools for Freshrelease operations, organized by functionality:
 
+#### **Project Management (2 tools)**
 - `fr_create_project`: Create a project
   - Inputs: `name` (string, required), `description` (string, optional)
 
 - `fr_get_project`: Get a project by ID or key
   - Inputs: `project_identifier` (number|string, required)
 
+#### **Task Management (4 tools)**
 - `fr_create_task`: Create a task under a project
   - Inputs: `project_identifier` (number|string, required), `title` (string, required), `description` (string, optional), `assignee_id` (number, optional), `status` (string|enum, optional), `due_date` (YYYY-MM-DD, optional), `issue_type_name` (string, optional, defaults to "task"), `user` (string email or name, optional), `additional_fields` (object, optional)
   - Notes: `user` resolves to `assignee_id` via users search if `assignee_id` not provided. `issue_type_name` resolves to `issue_type_id`. `additional_fields` allows passing arbitrary extra fields supported by your Freshrelease account. Core fields (`title`, `description`, `assignee_id`, `status`, `due_date`, `issue_type_id`) cannot be overridden.
@@ -38,9 +54,11 @@ The server offers several tools for Freshrelease operations:
 - `fr_get_issue_type_by_name`: Resolve an issue type object by name
   - Inputs: `project_identifier` (number|string, required), `issue_type_name` (string, required)
 
+#### **User Management (1 tool)**
 - `fr_search_users`: Search users by name or email within a project
   - Inputs: `project_identifier` (number|string, required), `search_text` (string, required)
 
+#### **Test Case Management (6 tools)**
 - `fr_list_testcases`: List all test cases in a project
   - Inputs: `project_identifier` (number|string, optional)
   - Notes: Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
@@ -60,6 +78,7 @@ The server offers several tools for Freshrelease operations:
   - Inputs: `project_identifier` (number|string, optional), `test_run_id` (number|string, required), `test_case_keys` (array of string|number, optional), `section_hierarchy_paths` (array of string, optional), `filter_rule` (array of object, optional)
   - Notes: Adds test cases to a test run. Can specify test case keys, section hierarchy paths, or filter rules. Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
 
+#### **Filtering & Search (2 tools)**
 - `fr_filter_tasks`: Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection
   - Inputs: `project_identifier` (number|string, optional), `query` (string|object, optional), `query_format` (string, optional), plus 19 standard field parameters
   - Standard Fields: `title`, `description`, `status_id` (ID or name), `priority_id`, `owner_id` (ID, name, or email), `issue_type_id` (ID or name), `project_id` (ID or key), `story_points`, `sprint_id` (ID or name), `start_date`, `due_by`, `release_id` (ID or name), `tags`, `document_ids`, `parent_id` (ID or issue key), `epic_id` (ID or issue key), `sub_project_id` (ID or name), `effort_value`, `duration_value`
@@ -69,40 +88,6 @@ The server offers several tools for Freshrelease operations:
   - Inputs: `label` (string, required), `query_hash` (array, required), `project_identifier` (number|string, optional), `private_filter` (boolean, optional, default: true), `quick_filter` (boolean, optional, default: false)
   - Notes: Creates and saves custom filters that can be reused. Use fr_filter_tasks first to get the query_hash, then save it with this function. Perfect for creating reusable filter presets.
 
-- `fr_clear_filter_cache`: Clear the custom fields cache for filter operations
-  - Inputs: None
-  - Notes: Useful when custom fields are added/modified in Freshrelease and you want to refresh the cache without restarting the server.
-
-- `fr_clear_lookup_cache`: Clear the lookup cache for sprints, releases, tags, and subprojects
-  - Inputs: None
-  - Notes: Useful when these items are added/modified in Freshrelease and you want to refresh the cache without restarting the server.
-
-- `fr_clear_resolution_cache`: Clear the resolution cache for name-to-ID lookups
-  - Inputs: None
-  - Notes: Useful when you want to refresh resolved IDs without restarting the server.
-
-- `fr_clear_testcase_form_cache`: Clear the test case form cache
-  - Inputs: None
-  - Notes: Useful when test case form fields are modified in Freshrelease and you want to refresh the cache without restarting the server.
-
-- `fr_clear_all_caches`: Clear all caches (custom fields, lookup data, resolution cache, and test case form cache)
-  - Inputs: None
-  - Notes: Useful when you want to refresh all cached data without restarting the server.
-
-### Performance Monitoring
-- `fr_get_performance_stats`: Get performance statistics for all monitored functions
-  - Inputs: None
-  - Notes: Returns execution times and call counts for all functions with performance monitoring enabled.
-
-- `fr_clear_performance_stats`: Clear performance statistics
-  - Inputs: None
-  - Notes: Resets all performance counters and execution time data.
-
-- `fr_close_http_client`: Close the HTTP client connection
-  - Inputs: None
-  - Notes: Properly closes the HTTP client connection. Useful for cleanup before server shutdown.
-
-### Test Case Filtering
 - `fr_filter_testcases`: Filter test cases using filter rules with automatic name-to-ID resolution
   - Inputs: `project_identifier` (number|string, optional), `filter_rules` (array of objects, optional)
   - Notes: Filter test cases by section, severity, type, linked issues, tags, etc. Automatically resolves names to IDs for section_id, type_id, issue_ids, tags, and custom fields. Use fr_get_testcase_form_fields to get available fields and values.
@@ -111,7 +96,7 @@ The server offers several tools for Freshrelease operations:
   - Inputs: `project_identifier` (number|string, optional)
   - Notes: Returns form fields that can be used in test case filter rules. Use this to understand available filter conditions and their possible values.
 
-### Lookup Functions
+#### **Lookup Functions (4 tools)**
 - `fr_get_sprint_by_name`: Get sprint ID by name
   - Inputs: `project_identifier` (number|string, optional), `sprint_name` (string, required)
 
@@ -127,6 +112,15 @@ The server offers several tools for Freshrelease operations:
 
 
 ## Advanced Features
+
+### Internal Performance & Caching
+The server includes advanced performance monitoring and caching systems that operate internally:
+- **Performance Monitoring**: All MCP tools are automatically monitored for execution times and call counts
+- **Multi-level Caching**: Custom fields, lookup data, and resolved IDs are cached for optimal performance
+- **Connection Pooling**: Global HTTP client with connection reuse for efficient API calls
+- **Batch Processing**: Parallel resolution of multiple names to IDs for improved performance
+
+*Note: Performance and cache management functions are available internally but not exposed as MCP tools to keep the interface clean and focused on core Freshrelease functionality.*
 
 ### Smart Name Resolution
 The server automatically converts human-readable names to Freshrelease IDs:
