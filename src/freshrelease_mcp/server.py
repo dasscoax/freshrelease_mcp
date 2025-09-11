@@ -392,19 +392,24 @@ class TASK_STATUS(str, Enum):
 
 @mcp.tool()
 @performance_monitor("fr_create_project")
-async def fr_create_project(name: str, description: Optional[str] = None, _env_data: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+async def fr_create_project(name: str, description: Optional[str] = None) -> Dict[str, Any]:
     """Create a project in Freshrelease.
     
     Args:
         name: Project name (required)
         description: Project description (optional)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         Created project data or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+        
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
 
     url = f"{base_url}/projects"
     payload: Dict[str, Any] = {"name": name}
@@ -416,22 +421,30 @@ async def fr_create_project(name: str, description: Optional[str] = None, _env_d
 
 @mcp.tool()
 @performance_monitor("fr_get_project")
-async def fr_get_project(project_identifier: Optional[Union[int, str]] = None, _env_data: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get a project from Freshrelease by ID or key.
 
     Args:
         project_identifier: numeric ID (e.g., 123) or key (e.g., "ENG") (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         Project data or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+        
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
 
-    url = f"{base_url}/projects/{project_id}"
-    return await make_api_request("GET", url, headers)
+        url = f"{base_url}/projects/{project_id}"
+        return await make_api_request("GET", url, headers)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get project: {str(e)}")
 
 
 @mcp.tool()
@@ -445,8 +458,7 @@ async def fr_create_task(
     due_date: Optional[str] = None,
     issue_type_name: Optional[str] = None,
     user: Optional[str] = None,
-    additional_fields: Optional[Dict[str, Any]] = None,
-    _env_data: Optional[Dict[str, str]] = None
+    additional_fields: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Create a task under a Freshrelease project.
 
@@ -460,13 +472,12 @@ async def fr_create_task(
         issue_type_name: Issue type name (e.g., "epic", "task") - defaults to "task"
         user: User name or email - resolves to assignee_id if assignee_id not provided
         additional_fields: Additional fields to include in request body (optional)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         Created task data or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    base_url = env_data["base_url"]
+    headers = env_data["headers"]
     project_id = get_project_identifier(project_identifier)
 
     # Build base payload
@@ -508,19 +519,18 @@ async def fr_create_task(
 
 @mcp.tool()
 @performance_monitor("fr_get_task")
-async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key: Union[int, str] = None, _env_data: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key: Union[int, str] = None) -> Dict[str, Any]:
     """Get a task from Freshrelease by ID or key.
     
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         key: Task ID or key (required)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         Task data or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    base_url = env_data["base_url"]
+    headers = env_data["headers"]
     project_id = get_project_identifier(project_identifier)
 
     if key is None:
@@ -531,18 +541,17 @@ async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key:
 
 @mcp.tool()
 @performance_monitor("fr_get_all_tasks")
-async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None, _env_data: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get all tasks/issues for a project.
     
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         List of tasks or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    base_url = env_data["base_url"]
+    headers = env_data["headers"]
     project_id = get_project_identifier(project_identifier)
 
     url = f"{base_url}/{project_id}/issues"
@@ -550,19 +559,18 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None,
 
 @mcp.tool()
 @performance_monitor("fr_get_issue_type_by_name")
-async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]] = None, issue_type_name: str = None, _env_data: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]] = None, issue_type_name: str = None) -> Dict[str, Any]:
     """Fetch the issue type object for a given human name within a project.
 
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         issue_type_name: Issue type name to search for (required)
-        _env_data: Environment data (injected by decorator)
         
     Returns:
         Issue type data or error response
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    base_url = env_data["base_url"]
+    headers = env_data["headers"]
     project_id = get_project_identifier(project_identifier)
 
     if issue_type_name is None:
@@ -976,8 +984,7 @@ async def fr_filter_tasks(
     epic_id: Optional[Union[int, str]] = None,
     sub_project_id: Optional[Union[int, str]] = None,
     effort_value: Optional[Union[int, str]] = None,
-    duration_value: Optional[Union[int, str]] = None,
-    _env_data: Optional[Dict[str, str]] = None
+    duration_value: Optional[Union[int, str]] = None
 ) -> Any:
     """Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection.
 
@@ -1029,8 +1036,8 @@ async def fr_filter_tasks(
         # Get all tasks (no filter)
         fr_filter_tasks()
     """
-    base_url = _env_data["base_url"]
-    headers = _env_data["headers"]
+    base_url = env_data["base_url"]
+    headers = env_data["headers"]
     project_id = get_project_identifier(project_identifier)
 
     # Collect individual field parameters (excluding project_id to avoid duplication)
@@ -1936,8 +1943,7 @@ async def fr_save_filter(
     query_hash: List[Dict[str, Any]],
     project_identifier: Optional[Union[int, str]] = None,
     private_filter: bool = True,
-    quick_filter: bool = False,
-    _env_data: Optional[Dict[str, str]] = None
+    quick_filter: bool = False
 ) -> Any:
     """Save a filter using query_hash from a previous fr_filter_tasks call.
     
@@ -1975,9 +1981,9 @@ async def fr_save_filter(
         Success response with saved filter details or error response
     """
     try:
-        project_id = get_project_identifier(project_identifier, _env_data)
-        base_url = _env_data["base_url"]
-        headers = _env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
         client = get_http_client()
 
         # Create the filter payload
@@ -2002,8 +2008,7 @@ async def fr_save_filter(
 @performance_monitor("fr_filter_testcases")
 async def fr_filter_testcases(
     project_identifier: Optional[Union[int, str]] = None,
-    filter_rules: Optional[List[Dict[str, Any]]] = None,
-    _env_data: Optional[Dict[str, str]] = None
+    filter_rules: Optional[List[Dict[str, Any]]] = None
 ) -> Any:
     """Filter test cases using filter rules with automatic name-to-ID resolution.
     
@@ -2050,9 +2055,9 @@ async def fr_filter_testcases(
         )
     """
     try:
-        project_id = get_project_identifier(project_identifier, _env_data)
-        base_url = _env_data["base_url"]
-        headers = _env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
         client = get_http_client()
 
         # Process and resolve filter rules with optimized batch resolution
@@ -2205,8 +2210,7 @@ async def fr_filter_testcases(
 @mcp.tool()
 @performance_monitor("fr_get_testcase_form_fields")
 async def fr_get_testcase_form_fields(
-    project_identifier: Optional[Union[int, str]] = None,
-    _env_data: Optional[Dict[str, str]] = None
+    project_identifier: Optional[Union[int, str]] = None
 ) -> Any:
     """Get available fields and their possible values for test case filtering.
     
@@ -2220,9 +2224,14 @@ async def fr_get_testcase_form_fields(
         Form fields data with available filter conditions and their possible values
     """
     try:
-        project_id = get_project_identifier(project_identifier, _env_data)
-        base_url = _env_data["base_url"]
-        headers = _env_data["headers"]
+        # Validate environment variables
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+        
+        project_id = get_project_identifier(project_identifier)
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
         client = get_http_client()
 
         # Get test case form fields
