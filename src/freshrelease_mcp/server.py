@@ -215,6 +215,9 @@ _lookup_cache: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 # Cache for resolved IDs to avoid repeated API calls
 _resolution_cache: Dict[str, Dict[str, Any]] = {}
 
+# Cache for test case form fields
+_testcase_form_cache: Dict[str, Any] = {}
+
 
 def get_standard_fields() -> frozenset:
     """Get the set of standard Freshrelease fields that are not custom fields."""
@@ -382,9 +385,6 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
     try:
         # Validate environment variables
         env_data = validate_environment()
-        if "error" in env_data:
-            return env_data
-        
         base_url = env_data["base_url"]
         headers = env_data["headers"]
 
@@ -413,9 +413,6 @@ async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -
     try:
         # Validate environment variables
         env_data = validate_environment()
-        if "error" in env_data:
-            return env_data
-        
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         project_id = get_project_identifier(project_identifier)
@@ -620,7 +617,7 @@ async def fr_search_users(project_identifier: Optional[Union[int, str]] = None, 
 
     async with httpx.AsyncClient() as client:
         try:
-            return await make_api_request(client, "GET", url, headers, params=params)
+            return await make_api_request("GET", url, headers, params=params, client=client)
         except httpx.HTTPStatusError as e:
             return create_error_response(f"Failed to search users: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
@@ -819,7 +816,7 @@ async def fr_list_testcases(project_identifier: Optional[Union[int, str]] = None
 
     async with httpx.AsyncClient() as client:
         try:
-            return await make_api_request(client, "GET", url, headers)
+            return await make_api_request("GET", url, headers, client=client)
         except httpx.HTTPStatusError as e:
             return create_error_response(f"Failed to list test cases: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
@@ -851,7 +848,7 @@ async def fr_get_testcase(project_identifier: Optional[Union[int, str]] = None, 
 
     async with httpx.AsyncClient() as client:
         try:
-            return await make_api_request(client, "GET", url, headers)
+            return await make_api_request("GET", url, headers, client=client)
         except httpx.HTTPStatusError as e:
             return create_error_response(f"Failed to get test case: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
@@ -894,7 +891,7 @@ async def fr_link_testcase_issues(project_identifier: Optional[Union[int, str]] 
             url = f"{base_url}/{project_id}/test_cases/update_many"
             payload = {"ids": resolved_testcase_ids, "test_case": {"issue_ids": resolved_issue_ids}}
             
-            return await make_api_request(client, "PUT", url, headers, json_data=payload)
+            return await make_api_request("PUT", url, headers, json_data=payload, client=client)
         except httpx.HTTPStatusError as e:
             return create_error_response(f"Failed to bulk update testcases: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
@@ -926,7 +923,7 @@ async def fr_get_testcases_by_section(project_identifier: Optional[Union[int, st
         try:
             # 1) Fetch sections and find matching id(s)
             sections_url = f"{base_url}/{project_id}/sections"
-            sections = await make_api_request(client, "GET", sections_url, headers)
+            sections = await make_api_request("GET", sections_url, headers, client=client)
 
             target = section_name.strip().lower()
             matched_ids: List[int] = []
@@ -949,7 +946,7 @@ async def fr_get_testcases_by_section(project_identifier: Optional[Union[int, st
             
             for sid in matched_ids:
                 params = [("section_subtree_ids[]", str(sid))]
-                data = await make_api_request(client, "GET", testcases_url, headers, params=params)
+                data = await make_api_request("GET", testcases_url, headers, params=params, client=client)
                 if isinstance(data, list):
                     all_results.extend(data)
                 else:
@@ -1180,6 +1177,7 @@ async def fr_get_subproject_by_name(
     return await _generic_lookup_by_name(project_identifier, subproject_name, "sub_projects", "subproject_name")
 
 
+@mcp.tool()
 async def fr_clear_filter_cache() -> Any:
     """Clear the custom fields cache for filter operations.
     
@@ -1196,6 +1194,7 @@ async def fr_clear_filter_cache() -> Any:
         return create_error_response(f"Failed to clear cache: {str(e)}")
 
 
+@mcp.tool()
 async def fr_clear_lookup_cache() -> Any:
     """Clear the lookup cache for sprints, releases, tags, and subprojects.
     
@@ -1212,6 +1211,7 @@ async def fr_clear_lookup_cache() -> Any:
         return create_error_response(f"Failed to clear lookup cache: {str(e)}")
 
 
+@mcp.tool()
 async def fr_clear_resolution_cache() -> Any:
     """Clear the resolution cache for name-to-ID lookups.
     
@@ -1401,7 +1401,7 @@ async def fr_filter_testcases(
             # Resolve sections
             if resolution_tasks["section"]:
                 section_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "section")
+                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "sections")
                     for _, name in resolution_tasks["section"]
                 ], return_exceptions=True)
                 for (rule_idx, name), result in zip(resolution_tasks["section"], section_resolutions):
@@ -1412,7 +1412,7 @@ async def fr_filter_testcases(
             # Resolve types
             if resolution_tasks["type"]:
                 type_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "type")
+                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "issue_types")
                     for _, name in resolution_tasks["type"]
                 ], return_exceptions=True)
                 for (rule_idx, name), result in zip(resolution_tasks["type"], type_resolutions):
@@ -1423,7 +1423,7 @@ async def fr_filter_testcases(
             # Resolve issues
             if resolution_tasks["issue"]:
                 issue_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issue")
+                    _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issues")
                     for _, issue_key in resolution_tasks["issue"]
                 ], return_exceptions=True)
                 for (rule_idx, issue_key), result in zip(resolution_tasks["issue"], issue_resolutions):
@@ -1436,7 +1436,7 @@ async def fr_filter_testcases(
             # Resolve tags
             if resolution_tasks["tag"]:
                 tag_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tag")
+                    _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tags")
                     for _, tag_name in resolution_tasks["tag"]
                 ], return_exceptions=True)
                 for (rule_idx, tag_name), result in zip(resolution_tasks["tag"], tag_resolutions):
@@ -1538,6 +1538,7 @@ async def fr_get_testcase_form_fields(
         return create_error_response(f"Failed to get test case form fields: {str(e)}")
 
 
+@mcp.tool()
 async def fr_clear_testcase_form_cache() -> Any:
     """Clear the test case form cache.
     
@@ -1555,6 +1556,7 @@ async def fr_clear_testcase_form_cache() -> Any:
         return create_error_response(f"Failed to clear test case form cache: {str(e)}")
 
 
+@mcp.tool()
 async def fr_clear_all_caches() -> Any:
     """Clear all caches (custom fields, lookup data, and resolution cache).
     
@@ -1578,6 +1580,7 @@ async def fr_clear_all_caches() -> Any:
         return create_error_response(f"Failed to clear caches: {str(e)}")
 
 
+@mcp.tool()
 async def fr_get_performance_stats() -> Dict[str, Any]:
     """Get performance statistics for all monitored functions.
     
@@ -1591,6 +1594,7 @@ async def fr_get_performance_stats() -> Dict[str, Any]:
         return create_error_response(f"Failed to get performance stats: {str(e)}")
 
 
+@mcp.tool()
 async def fr_clear_performance_stats() -> Dict[str, Any]:
     """Clear performance statistics.
     
@@ -1604,6 +1608,7 @@ async def fr_clear_performance_stats() -> Dict[str, Any]:
         return create_error_response(f"Failed to clear performance stats: {str(e)}")
 
 
+@mcp.tool()
 async def fr_close_http_client() -> Dict[str, Any]:
     """Close the global HTTP client to free resources.
     
@@ -1659,7 +1664,7 @@ async def fr_add_testcases_to_testrun(
             if test_case_keys:
                 for key in test_case_keys:
                     tc_url = f"{base_url}/{project_id}/test_cases/{key}"
-                    tc_data = await make_api_request(client, "GET", tc_url, headers)
+                    tc_data = await make_api_request("GET", tc_url, headers, client=client)
                     if isinstance(tc_data, dict) and "id" in tc_data:
                         resolved_test_case_ids.append(str(tc_data["id"]))
                     else:
@@ -1685,7 +1690,7 @@ async def fr_add_testcases_to_testrun(
 
             # Make the PUT request
             url = f"{base_url}/{project_id}/test_runs/{test_run_id}/test_cases"
-            return await make_api_request(client, "PUT", url, headers, json_data=payload)
+            return await make_api_request("PUT", url, headers, json_data=payload, client=client)
 
         except httpx.HTTPStatusError as e:
             return create_error_response(f"Failed to add test cases to test run: {str(e)}", e.response.json() if e.response else None)
@@ -1775,11 +1780,11 @@ def _clear_resolution_cache() -> Dict[str, Any]:
 
 
 async def _resolve_name_to_id_generic(
+    name: str,
+    project_id: Union[int, str],
     client: httpx.AsyncClient,
     base_url: str,
-    project_id: Union[int, str],
     headers: Dict[str, str],
-    name: str,
     data_type: str
 ) -> int:
     """Generic function to resolve names to IDs."""
@@ -1788,12 +1793,12 @@ async def _resolve_name_to_id_generic(
 
 
 async def _resolve_custom_field_value_optimized(
+    field_name: str,
+    value: str,
+    project_id: Union[int, str],
     client: httpx.AsyncClient,
     base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    field_name: str,
-    value: str
+    headers: Dict[str, str]
 ) -> str:
     """Resolve custom field values to IDs."""
     # This is a placeholder implementation
