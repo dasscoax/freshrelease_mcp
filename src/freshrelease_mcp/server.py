@@ -1066,12 +1066,61 @@ async def fr_filter_tasks(
         # Filter out None values
         field_params = {k: v for k, v in field_params.items() if v is not None}
 
-        # Build the final query
-        final_query = field_params
-        
-        # Make the API request
+        # Resolve names to IDs for fields that need it
+        resolved_params = {}
+        if field_params:
+            async with httpx.AsyncClient() as client:
+                for field_name, value in field_params.items():
+                    if field_name == "owner_id" and isinstance(value, str):
+                        # Resolve user name/email to ID
+                        try:
+                            user_id = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
+                            resolved_params[field_name] = user_id
+                        except Exception:
+                            # If resolution fails, use original value
+                            resolved_params[field_name] = value
+                    elif field_name == "status_id" and isinstance(value, str):
+                        # Resolve status name to ID
+                        try:
+                            status_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "statuses")
+                            resolved_params[field_name] = status_id
+                        except Exception:
+                            resolved_params[field_name] = value
+                    elif field_name == "issue_type_id" and isinstance(value, str):
+                        # Resolve issue type name to ID
+                        try:
+                            type_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "issue_types")
+                            resolved_params[field_name] = type_id
+                        except Exception:
+                            resolved_params[field_name] = value
+                    elif field_name == "sprint_id" and isinstance(value, str):
+                        # Resolve sprint name to ID
+                        try:
+                            sprint_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sprints")
+                            resolved_params[field_name] = sprint_id
+                        except Exception:
+                            resolved_params[field_name] = value
+                    elif field_name == "release_id" and isinstance(value, str):
+                        # Resolve release name to ID
+                        try:
+                            release_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "releases")
+                            resolved_params[field_name] = release_id
+                        except Exception:
+                            resolved_params[field_name] = value
+                    elif field_name == "sub_project_id" and isinstance(value, str):
+                        # Resolve subproject name to ID
+                        try:
+                            subproject_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sub_projects")
+                            resolved_params[field_name] = subproject_id
+                        except Exception:
+                            resolved_params[field_name] = value
+                    else:
+                        # For other fields, use the value as-is
+                        resolved_params[field_name] = value
+
+        # Make the API request with individual parameters 
         url = f"{base_url}/{project_id}/issues/filter"
-        params = {"query": ",".join([f"{k}:{v}" for k, v in final_query.items()])}
+        params = resolved_params if resolved_params else {}
         
         result = await make_api_request("GET", url, headers, params=params)
         
@@ -1787,6 +1836,38 @@ async def _resolve_name_to_id_generic(
     """Generic function to resolve names to IDs."""
     item = await _find_item_by_name(client, base_url, project_id, headers, data_type, name)
     return item["id"]
+
+
+async def _resolve_user_name_to_id(
+    user_identifier: str,
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str]
+) -> int:
+    """Resolve user name or email to user ID."""
+    # First try to find by exact name match
+    try:
+        url = f"{base_url}/{project_id}/users"
+        params = {"q": user_identifier}
+        response = await client.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        users = response.json()
+        
+        if isinstance(users, list) and users:
+            # Look for exact name match first
+            for user in users:
+                if user.get("name", "").lower() == user_identifier.lower():
+                    return user["id"]
+                if user.get("email", "").lower() == user_identifier.lower():
+                    return user["id"]
+            
+            # If no exact match, return the first result
+            return users[0]["id"]
+        
+        raise ValueError(f"User '{user_identifier}' not found")
+    except Exception as e:
+        raise ValueError(f"Failed to resolve user '{user_identifier}': {str(e)}")
 
 
 async def _resolve_custom_field_value_optimized(
