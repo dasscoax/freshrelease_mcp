@@ -986,6 +986,9 @@ async def fr_filter_tasks(
 ) -> Any:
     """Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection.
 
+    This function supports both individual field parameters and query-based filtering with comprehensive
+    name-to-ID resolution for all field types including custom fields.
+
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         query: Filter query in JSON string or comma-separated format (optional)
@@ -1025,14 +1028,24 @@ async def fr_filter_tasks(
         # Using issue keys for parent/epic
         fr_filter_tasks(parent_id="PROJ-123", epic_id="PROJ-456")
         
-        # Using query format with names
-        fr_filter_tasks(query="owner_id:John Doe,status_id:In Progress,cf_custom_field:value")
+        # Using query format with names and custom fields
+        fr_filter_tasks(query="owner_id:kalidass,theme:ITPM")
+        fr_filter_tasks(query="owner_id:John Doe,status_id:In Progress,cf_theme:ITPM")
         
-        # JSON format
-        fr_filter_tasks(query='{"owner_id":"John Doe","status_id":"In Progress"}', query_format="json")
+        # JSON format with custom fields
+        fr_filter_tasks(query='{"owner_id":"John Doe","status_id":"In Progress","theme":"ITPM"}', query_format="json")
+        
+        # Mixed ID and name filtering
+        fr_filter_tasks(owner_id=123, status_id="In Progress", sprint_id="Sprint 1")
         
         # Get all tasks (no filter)
         fr_filter_tasks()
+        
+    Note:
+        - All field names support both human-readable names and IDs
+        - Custom fields are automatically detected and prefixed with 'cf_'
+        - Name-to-ID resolution works for: owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id
+        - Custom field values are also resolved to IDs when possible
     """
     try:
         # Validate environment variables
@@ -1066,57 +1079,49 @@ async def fr_filter_tasks(
         # Filter out None values
         field_params = {k: v for k, v in field_params.items() if v is not None}
 
-        # Resolve names to IDs for fields that need it
+        # Handle query parameter if provided
+        if query:
+            async with httpx.AsyncClient() as client:
+                # Get custom fields for the project to process query properly
+                custom_fields = await get_project_custom_fields(client, base_url, project_id, headers)
+                
+                # Parse query based on format
+                if query_format == "json":
+                    if isinstance(query, str):
+                        import json
+                        query_dict = json.loads(query)
+                    else:
+                        query_dict = query
+                    query_pairs = list(query_dict.items())
+                else:
+                    # Comma-separated format
+                    processed_query_str = process_query_with_custom_fields(query, custom_fields)
+                    query_pairs = parse_query_string(processed_query_str)
+                
+                # Resolve all field names and values to IDs
+                resolved_query = await _resolve_query_fields(
+                    query_pairs, project_id, client, base_url, headers, custom_fields
+                )
+                
+                # Make API request with resolved parameters
+                url = f"{base_url}/{project_id}/issues/filter"
+                result = await make_api_request("GET", url, headers, params=resolved_query)
+                return result
+
+        # Resolve names to IDs for individual field parameters
         resolved_params = {}
         if field_params:
             async with httpx.AsyncClient() as client:
-                for field_name, value in field_params.items():
-                    if field_name == "owner_id" and isinstance(value, str):
-                        # Resolve user name/email to ID
-                        try:
-                            user_id = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
-                            resolved_params[field_name] = user_id
-                        except Exception:
-                            # If resolution fails, use original value
-                            resolved_params[field_name] = value
-                    elif field_name == "status_id" and isinstance(value, str):
-                        # Resolve status name to ID
-                        try:
-                            status_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "statuses")
-                            resolved_params[field_name] = status_id
-                        except Exception:
-                            resolved_params[field_name] = value
-                    elif field_name == "issue_type_id" and isinstance(value, str):
-                        # Resolve issue type name to ID
-                        try:
-                            type_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "issue_types")
-                            resolved_params[field_name] = type_id
-                        except Exception:
-                            resolved_params[field_name] = value
-                    elif field_name == "sprint_id" and isinstance(value, str):
-                        # Resolve sprint name to ID
-                        try:
-                            sprint_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sprints")
-                            resolved_params[field_name] = sprint_id
-                        except Exception:
-                            resolved_params[field_name] = value
-                    elif field_name == "release_id" and isinstance(value, str):
-                        # Resolve release name to ID
-                        try:
-                            release_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "releases")
-                            resolved_params[field_name] = release_id
-                        except Exception:
-                            resolved_params[field_name] = value
-                    elif field_name == "sub_project_id" and isinstance(value, str):
-                        # Resolve subproject name to ID
-                        try:
-                            subproject_id = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sub_projects")
-                            resolved_params[field_name] = subproject_id
-                        except Exception:
-                            resolved_params[field_name] = value
-                    else:
-                        # For other fields, use the value as-is
-                        resolved_params[field_name] = value
+                # Get custom fields for individual parameter processing
+                custom_fields = await get_project_custom_fields(client, base_url, project_id, headers)
+                
+                # Convert field_params to query_pairs format for consistent processing
+                query_pairs = list(field_params.items())
+                
+                # Use the same resolution logic as query processing
+                resolved_params = await _resolve_query_fields(
+                    query_pairs, project_id, client, base_url, headers, custom_fields
+                )
 
         # Make the API request with individual parameters 
         url = f"{base_url}/{project_id}/issues/filter"
@@ -1868,6 +1873,74 @@ async def _resolve_user_name_to_id(
         raise ValueError(f"User '{user_identifier}' not found")
     except Exception as e:
         raise ValueError(f"Failed to resolve user '{user_identifier}': {str(e)}")
+
+
+async def _resolve_query_fields(
+    query_pairs: List[tuple],
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str],
+    custom_fields: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Resolve all query field names and values to their proper IDs.
+    
+    Handles:
+    - Standard fields (owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id)
+    - Custom fields (with cf_ prefix)
+    - Name-to-ID resolution for all supported field types
+    """
+    resolved_query = {}
+    
+    # Field resolution mapping
+    field_resolvers = {
+        "owner_id": lambda value: _resolve_user_name_to_id(value, project_id, client, base_url, headers),
+        "status_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "statuses"),
+        "issue_type_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "issue_types"),
+        "sprint_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sprints"),
+        "release_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "releases"),
+        "sub_project_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sub_projects"),
+    }
+    
+    for field_name, value in query_pairs:
+        try:
+            # Handle custom fields
+            if field_name.startswith("cf_") or is_custom_field(field_name, custom_fields):
+                # Ensure custom field has cf_ prefix
+                if not field_name.startswith("cf_"):
+                    field_name = f"cf_{field_name}"
+                
+                # For custom fields, try to resolve value to ID if it's a string
+                if isinstance(value, str):
+                    try:
+                        resolved_value = await _resolve_custom_field_value_optimized(
+                            field_name, value, project_id, client, base_url, headers
+                        )
+                        resolved_query[field_name] = resolved_value
+                    except Exception:
+                        # If custom field resolution fails, use original value
+                        resolved_query[field_name] = value
+                else:
+                    resolved_query[field_name] = value
+            
+            # Handle standard fields with name-to-ID resolution
+            elif field_name in field_resolvers and isinstance(value, str):
+                try:
+                    resolved_value = await field_resolvers[field_name](value)
+                    resolved_query[field_name] = resolved_value
+                except Exception:
+                    # If resolution fails, use original value
+                    resolved_query[field_name] = value
+            
+            # Handle other fields (pass through as-is)
+            else:
+                resolved_query[field_name] = value
+                
+        except Exception as e:
+            # If any error occurs, use original value
+            resolved_query[field_name] = value
+    
+    return resolved_query
 
 
 async def _resolve_custom_field_value_optimized(

@@ -1,6 +1,6 @@
 [project]
 name = "freshrelease-mcp"
-version = "1.6.1"
+version = "1.6.2"
 description = "An MCP server for Freshrelease"
 readme = "README.md"
 requires-python = ">=3.10"
