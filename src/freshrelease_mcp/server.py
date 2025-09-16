@@ -615,13 +615,12 @@ async def fr_search_users(project_identifier: Optional[Union[int, str]] = None, 
     url = f"{base_url}/{project_id}/users"
     params = {"q": search_text}
 
-    async with httpx.AsyncClient() as client:
-        try:
-            return await make_api_request("GET", url, headers, params=params, client=client)
-        except httpx.HTTPStatusError as e:
-            return create_error_response(f"Failed to search users: {str(e)}", e.response.json() if e.response else None)
-        except Exception as e:
-            return create_error_response(f"An unexpected error occurred: {str(e)}")
+    try:
+        return await make_api_request("GET", url, headers, params=params)
+    except httpx.HTTPStatusError as e:
+        return create_error_response(f"Failed to search users: {str(e)}", e.response.json() if e.response else None)
+    except Exception as e:
+        return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 async def issue_ids_from_keys(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], issue_keys: List[Union[str, int]]) -> List[int]:
     resolved: List[int] = []
@@ -814,13 +813,12 @@ async def fr_list_testcases(project_identifier: Optional[Union[int, str]] = None
 
     url = f"{base_url}/{project_id}/test_cases"
 
-    async with httpx.AsyncClient() as client:
-        try:
-            return await make_api_request("GET", url, headers, client=client)
-        except httpx.HTTPStatusError as e:
-            return create_error_response(f"Failed to list test cases: {str(e)}", e.response.json() if e.response else None)
-        except Exception as e:
-            return create_error_response(f"An unexpected error occurred: {str(e)}")
+    try:
+        return await make_api_request("GET", url, headers)
+    except httpx.HTTPStatusError as e:
+        return create_error_response(f"Failed to list test cases: {str(e)}", e.response.json() if e.response else None)
+    except Exception as e:
+        return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
 async def fr_get_testcase(project_identifier: Optional[Union[int, str]] = None, test_case_key: Union[str, int] = None) -> Any:
@@ -846,13 +844,12 @@ async def fr_get_testcase(project_identifier: Optional[Union[int, str]] = None, 
 
     url = f"{base_url}/{project_id}/test_cases/{test_case_key}"
 
-    async with httpx.AsyncClient() as client:
-        try:
-            return await make_api_request("GET", url, headers, client=client)
-        except httpx.HTTPStatusError as e:
-            return create_error_response(f"Failed to get test case: {str(e)}", e.response.json() if e.response else None)
-        except Exception as e:
-            return create_error_response(f"An unexpected error occurred: {str(e)}")
+    try:
+        return await make_api_request("GET", url, headers)
+    except httpx.HTTPStatusError as e:
+        return create_error_response(f"Failed to get test case: {str(e)}", e.response.json() if e.response else None)
+    except Exception as e:
+        return create_error_response(f"An unexpected error occurred: {str(e)}")
 
 @mcp.tool()
 async def fr_link_testcase_issues(project_identifier: Optional[Union[int, str]] = None, testcase_keys: List[Union[str, int]] = None, issue_keys: List[Union[str, int]] = None) -> Any:
