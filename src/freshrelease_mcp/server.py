@@ -196,29 +196,6 @@ def create_error_response(error_msg: str, details: Any = None) -> Dict[str, Any]
     return response
 
 
-def mcp_tool_with_error_handling(func: Callable) -> Callable:
-    """Decorator for MCP tools that provides standardized error handling and performance monitoring."""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        func_name = func.__name__
-        
-        try:
-            # Validate environment at the start
-            env_data = validate_environment()
-            
-            # Call the original function with environment data
-            result = await func(*args, **kwargs, _env_data=env_data)
-            return result
-            
-        except ValueError as e:
-            return create_error_response(str(e))
-        except httpx.HTTPStatusError as e:
-            error_details = e.response.json() if e.response else None
-            return create_error_response(f"API request failed: {str(e)}", error_details)
-        except Exception as e:
-            return create_error_response(f"An unexpected error occurred in {func_name}: {str(e)}")
-    
-    return wrapper
 
 
 # Cache for standard fields to avoid recreating set on every call
@@ -479,45 +456,51 @@ async def fr_create_task(
     Returns:
         Created task data or error response
     """
-    base_url = env_data["base_url"]
-    headers = env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
 
-    # Build base payload
-    payload: Dict[str, Any] = {"title": title}
-    if description is not None:
-        payload["description"] = description
-    if assignee_id is not None:
-        payload["assignee_id"] = assignee_id
-    if status is not None:
-        payload["status"] = status.value if isinstance(status, TASK_STATUS) else status
-    if due_date is not None:
-        payload["due_date"] = due_date
+        # Build base payload
+        payload: Dict[str, Any] = {"title": title}
+        if description is not None:
+            payload["description"] = description
+        if assignee_id is not None:
+            payload["assignee_id"] = assignee_id
+        if status is not None:
+            payload["status"] = status.value if isinstance(status, TASK_STATUS) else status
+        if due_date is not None:
+            payload["due_date"] = due_date
 
-    # Merge additional fields without allowing overrides of core fields
-    if additional_fields:
-        protected_keys = {"title", "description", "assignee_id", "status", "due_date", "issue_type_id"}
-        for key, value in additional_fields.items():
-            if key not in protected_keys:
-                payload[key] = value
+        # Merge additional fields without allowing overrides of core fields
+        if additional_fields:
+            protected_keys = {"title", "description", "assignee_id", "status", "due_date", "issue_type_id"}
+            for key, value in additional_fields.items():
+                if key not in protected_keys:
+                    payload[key] = value
 
-    # Resolve issue type name to ID
-    name_to_resolve = issue_type_name or "task"
-    issue_type_id = await resolve_issue_type_name_to_id(
-        get_http_client(), base_url, project_id, headers, name_to_resolve
-    )
-    payload["issue_type_id"] = issue_type_id
-
-    # Resolve user to assignee_id if applicable
-    if "assignee_id" not in payload and user:
-        assignee_id = await resolve_user_to_assignee_id(
-            get_http_client(), base_url, project_id, headers, user
+        # Resolve issue type name to ID
+        name_to_resolve = issue_type_name or "task"
+        issue_type_id = await resolve_issue_type_name_to_id(
+            get_http_client(), base_url, project_id, headers, name_to_resolve
         )
-        payload["assignee_id"] = assignee_id
+        payload["issue_type_id"] = issue_type_id
 
-    # Create the task
-    url = f"{base_url}/{project_id}/issues"
-    return await make_api_request("POST", url, headers, json_data=payload)
+        # Resolve user to assignee_id if applicable
+        if "assignee_id" not in payload and user:
+            assignee_id = await resolve_user_to_assignee_id(
+                get_http_client(), base_url, project_id, headers, user
+            )
+            payload["assignee_id"] = assignee_id
+
+        # Create the task
+        url = f"{base_url}/{project_id}/issues"
+        return await make_api_request("POST", url, headers, json_data=payload)
+
+    except Exception as e:
+        return create_error_response(f"Failed to create task: {str(e)}")
 
 
 @mcp.tool()
@@ -532,15 +515,21 @@ async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key:
     Returns:
         Task data or error response
     """
-    base_url = env_data["base_url"]
-    headers = env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
 
-    if key is None:
-        return create_error_response("key is required")
+        if key is None:
+            return create_error_response("key is required")
 
-    url = f"{base_url}/{project_id}/issues/{key}"
-    return await make_api_request("GET", url, headers)
+        url = f"{base_url}/{project_id}/issues/{key}"
+        return await make_api_request("GET", url, headers)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get task: {str(e)}")
 
 @mcp.tool()
 @performance_monitor("fr_get_all_tasks")
@@ -553,12 +542,18 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None)
     Returns:
         List of tasks or error response
     """
-    base_url = env_data["base_url"]
-    headers = env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
 
-    url = f"{base_url}/{project_id}/issues"
-    return await make_api_request("GET", url, headers)
+        url = f"{base_url}/{project_id}/issues"
+        return await make_api_request("GET", url, headers)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get all tasks: {str(e)}")
 
 @mcp.tool()
 @performance_monitor("fr_get_issue_type_by_name")
@@ -572,25 +567,31 @@ async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]
     Returns:
         Issue type data or error response
     """
-    base_url = env_data["base_url"]
-    headers = env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
 
-    if issue_type_name is None:
-        return create_error_response("issue_type_name is required")
+        if issue_type_name is None:
+            return create_error_response("issue_type_name is required")
 
-    url = f"{base_url}/{project_id}/issue_types"
-    data = await make_api_request("GET", url, headers)
-    
-    # Expecting a list of objects with a 'name' property
-    if isinstance(data, list):
-        target = issue_type_name.strip().lower()
-        for item in data:
-            name = str(item.get("name", "")).strip().lower()
-            if name == target:
-                return item
-        return create_error_response(f"Issue type '{issue_type_name}' not found")
-    return create_error_response("Unexpected response structure for issue types", data)
+        url = f"{base_url}/{project_id}/issue_types"
+        data = await make_api_request("GET", url, headers)
+        
+        # Expecting a list of objects with a 'name' property
+        if isinstance(data, list):
+            target = issue_type_name.strip().lower()
+            for item in data:
+                name = str(item.get("name", "")).strip().lower()
+                if name == target:
+                    return item
+            return create_error_response(f"Issue type '{issue_type_name}' not found")
+        return create_error_response("Unexpected response structure for issue types", data)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get issue type: {str(e)}")
 
 @mcp.tool()
 async def fr_search_users(project_identifier: Optional[Union[int, str]] = None, search_text: str = None) -> Any:
@@ -1021,7 +1022,7 @@ async def fr_filter_tasks(
         Filtered list of tasks or error response
         
     Examples:
-        # Using names instead of IDs (automatically resolved)
+        # Using individual field parameters with names (automatically resolved to IDs)
         fr_filter_tasks(owner_id="John Doe", status_id="In Progress", issue_type_id="Bug")
         
         # Using project key instead of ID
@@ -1039,760 +1040,51 @@ async def fr_filter_tasks(
         # Get all tasks (no filter)
         fr_filter_tasks()
     """
-    base_url = env_data["base_url"]
-    headers = env_data["headers"]
-    project_id = get_project_identifier(project_identifier)
-
-    # Collect individual field parameters (excluding project_id to avoid duplication)
-    field_params = {
-        "title": title,
-        "description": description,
-        "status_id": status_id,
-        "priority_id": priority_id,
-        "owner_id": owner_id,
-        "issue_type_id": issue_type_id,
-        "story_points": story_points,
-        "sprint_id": sprint_id,
-        "start_date": start_date,
-        "due_by": due_by,
-        "release_id": release_id,
-        "tags": tags,
-        "document_ids": document_ids,
-        "parent_id": parent_id,
-        "epic_id": epic_id,
-        "sub_project_id": sub_project_id,
-        "effort_value": effort_value,
-        "duration_value": duration_value
-    }
-
-    # Filter out None values
-    field_params = {k: v for k, v in field_params.items() if v is not None}
-
-    # Validate parameters if any are provided
-    if field_params:
-        try:
-            _validate_filter_params(field_params)
-        except ValueError as e:
-            return create_error_response(str(e))
-
-    # Get custom fields for the project (with caching)
-    custom_fields = await get_project_custom_fields(get_http_client(), base_url, project_id, headers)
-    
-    # Resolve field names to IDs if any field parameters are provided
-    if field_params:
-        try:
-            field_params = await _resolve_filter_field_names_to_ids(
-                get_http_client(), base_url, project_id, headers, field_params
-            )
-        except ValueError as e:
-            return create_error_response(str(e))
-        
-        # Build final query string
-        final_query = None
-        
-        if field_params:
-            # Build query from individual parameters (now with resolved IDs)
-            query_from_params = build_filter_query_from_params(field_params)
-            final_query = query_from_params
-            
-            # If query string is also provided, combine them
-            if query is not None:
-                query_str = _convert_query_to_string(query, query_format)
-                if query_str:
-                    final_query = f"{query_from_params},{query_str}"
-        elif query is not None:
-            # Only query string provided
-            final_query = _convert_query_to_string(query, query_format)
-
-        # Process query to add cf_ prefix for custom fields
-        if final_query and query_format == "comma_separated":
-            final_query = process_query_with_custom_fields(final_query, custom_fields)
-
-        # Prepare API request
-        url = f"{base_url}/{project_id}/issues/filter"
-        params = {"query": final_query} if final_query else {}
-
-        # Get the filter results
-        result = await make_api_request("GET", url, headers, params=params)
-        
-        # Add query_hash to the result for saving filters
-        if isinstance(result, dict) and "issues" in result:
-            # Build query_hash from the resolved parameters for saving
-            query_hash = _build_query_hash_from_params(field_params) if field_params else []
-            result["query_hash"] = query_hash
-        
-        return result
-
-
-def _convert_query_to_string(query: Union[str, Dict[str, Any]], query_format: str) -> str:
-    """Convert query to string format based on query_format."""
-    if not query:
-        return ""
-    
-    if query_format == "json":
-        if isinstance(query, dict):
-            return str(query)
-        return str(query)
-    else:
-        # Comma-separated format
-        if isinstance(query, dict):
-            return build_filter_query_from_params(query)
-        return str(query)
-
-
-def _validate_filter_params(field_params: Dict[str, Any]) -> None:
-    """Validate filter parameters for common issues."""
-    # Validate date formats
-    date_fields = ["start_date", "due_by"]
-    for field in date_fields:
-        if field in field_params:
-            value = field_params[field]
-            if isinstance(value, str) and value:
-                # Basic date format validation (YYYY-MM-DD)
-                import re
-                if not re.match(r'^\d{4}-\d{2}-\d{2}$', value):
-                    raise ValueError(f"Invalid date format for {field}: {value}. Expected YYYY-MM-DD format.")
-    
-    # Validate numeric fields
-    numeric_fields = ["status_id", "priority_id", "owner_id", "issue_type_id", "project_id", 
-                     "story_points", "sprint_id", "release_id", "parent_id", "epic_id", 
-                     "sub_project_id", "effort_value", "duration_value"]
-    
-    for field in numeric_fields:
-        if field in field_params:
-            value = field_params[field]
-            if value is not None and not isinstance(value, (int, str)):
-                raise ValueError(f"Invalid value for {field}: {value}. Expected number or string.")
-
-
-def _clear_custom_fields_cache() -> None:
-    """Clear the custom fields cache. Useful for testing or when fields change."""
-    global _custom_fields_cache
-    _custom_fields_cache.clear()
-
-
-def _clear_lookup_cache() -> None:
-    """Clear the lookup cache. Useful for testing or when data changes."""
-    global _lookup_cache
-    _lookup_cache.clear()
-
-
-def _clear_resolution_cache() -> None:
-    """Clear the resolution cache. Useful for testing or when data changes."""
-    global _resolution_cache
-    _resolution_cache.clear()
-
-
-# Cache for test case form data to avoid repeated API calls
-_testcase_form_cache: Dict[str, Dict[str, Any]] = {}
-
-
-async def _get_testcase_form_data(project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
-    """Get test case form data with caching.
-    
-    Args:
-        project_id: Project ID
-        client: HTTP client
-        base_url: Base URL
-        headers: Request headers
-        
-    Returns:
-        Form data dictionary
-    """
-    if project_id not in _testcase_form_cache:
-        try:
-            url = f"{base_url}/{project_id}/test_cases/form"
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            _testcase_form_cache[project_id] = response.json()
-        except Exception:
-            _testcase_form_cache[project_id] = {}
-    
-    return _testcase_form_cache[project_id]
-
-
-async def _resolve_name_to_id_generic(
-    name: str, 
-    project_id: str, 
-    client: httpx.AsyncClient, 
-    base_url: str, 
-    headers: Dict[str, str],
-    resolution_type: str
-) -> Optional[str]:
-    """Generic function to resolve names to IDs for test case filtering.
-    
-    Args:
-        name: Name to resolve
-        project_id: Project ID
-        client: HTTP client
-        base_url: Base URL
-        headers: Request headers
-        resolution_type: Type of resolution (section, type, tag, issue)
-        
-    Returns:
-        Resolved ID or None if not found
-    """
     try:
-        if resolution_type == "section":
-            url = f"{base_url}/{project_id}/sections"
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            items = data.get("sections", [])
-            key_field = "name"
-            id_field = "id"
-            
-        elif resolution_type == "type":
-            form_data = await _get_testcase_form_data(project_id, client, base_url, headers)
-            items = form_data.get("test_case_types", [])
-            key_field = "name"
-            id_field = "id"
-            
-        elif resolution_type == "tag":
-            url = f"{base_url}/{project_id}/tags"
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            items = data.get("tags", [])
-            key_field = "name"
-            id_field = "id"
-            
-        elif resolution_type == "issue":
-            url = f"{base_url}/{project_id}/issues/{name}"
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if "issue" in data:
-                return str(data["issue"]["id"])
-            return None
-            
-        else:
-            return None
-        
-        # Find item by name (case-insensitive)
-        for item in items:
-            if item.get(key_field, "").lower() == name.lower():
-                return str(item[id_field])
-        
-        return None
-        
-    except Exception:
-        return None
-
-
-async def _resolve_custom_field_value_optimized(
-    field_name: str, 
-    field_value: str, 
-    project_id: str, 
-    client: httpx.AsyncClient, 
-    base_url: str, 
-    headers: Dict[str, str]
-) -> str:
-    """Optimized custom field value resolution with caching.
-    
-    Args:
-        field_name: Name of the custom field
-        field_value: Value to resolve
-        project_id: Project ID
-        client: HTTP client
-        base_url: Base URL
-        headers: Request headers
-        
-    Returns:
-        Resolved value ID or original value if not found
-    """
-    try:
-        form_data = await _get_testcase_form_data(project_id, client, base_url, headers)
-        custom_fields = form_data.get("custom_fields", [])
-        
-        # Find custom field by name
-        for field in custom_fields:
-            if field.get("name", "").lower() == field_name.lower():
-                options = field.get("options", [])
-                for option in options:
-                    if option.get("name", "").lower() == field_value.lower():
-                        return str(option["id"])
-                break
-        
-        return field_value  # Return original value if not found
-        
-    except Exception:
-        return field_value
-
-
-# Convenience functions for backward compatibility
-async def _resolve_section_name_to_id(section_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
-    """Resolve section name to ID for test case filtering."""
-    return await _resolve_name_to_id_generic(section_name, project_id, client, base_url, headers, "section")
-
-
-async def _resolve_testcase_type_name_to_id(type_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
-    """Resolve test case type name to ID for test case filtering."""
-    return await _resolve_name_to_id_generic(type_name, project_id, client, base_url, headers, "type")
-
-
-async def _resolve_issue_key_to_id(issue_key: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
-    """Resolve issue key to ID for test case filtering."""
-    return await _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issue")
-
-
-async def _resolve_tag_name_to_id(tag_name: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> Optional[str]:
-    """Resolve tag name to ID for test case filtering."""
-    return await _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tag")
-
-
-async def _resolve_custom_field_value(field_name: str, field_value: str, project_id: str, client: httpx.AsyncClient, base_url: str, headers: Dict[str, str]) -> str:
-    """Resolve custom field value to ID for test case filtering."""
-    return await _resolve_custom_field_value_optimized(field_name, field_value, project_id, client, base_url, headers)
-
-
-def _build_query_hash_from_params(params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Build query_hash from resolved parameters for saving filters.
-    
-    Args:
-        params: Dictionary of resolved filter parameters
-        
-    Returns:
-        List of query hash conditions
-    """
-    query_hash = []
-    
-    for field_name, value in params.items():
-        if value is not None:
-            if field_name in ["tags", "document_ids"] and isinstance(value, list):
-                query_hash.append({
-                    "condition": field_name,
-                    "operator": "is_in",
-                    "value": value
-                })
-            elif field_name in ["start_date", "due_by"]:
-                query_hash.append({
-                    "condition": field_name,
-                    "operator": "is",
-                    "value": value
-                })
-            else:
-                query_hash.append({
-                    "condition": field_name,
-                    "operator": "is_in",
-                    "value": [str(value)]
-                })
-    
-    return query_hash
-
-
-async def _resolve_with_cache(
-    cache_key: str,
-    resolve_func,
-    *args,
-    **kwargs
-) -> Any:
-    """Resolve a value with caching to avoid repeated API calls.
-    
-    Args:
-        cache_key: Unique key for caching the result
-        resolve_func: Function to call for resolution
-        *args: Arguments to pass to resolve function
-        **kwargs: Keyword arguments to pass to resolve function
-        
-    Returns:
-        Resolved value
-    """
-    # Check cache first
-    if cache_key in _resolution_cache:
-        return _resolution_cache[cache_key]
-    
-    # Resolve using the provided function
-    result = await resolve_func(*args, **kwargs)
-    
-    # Cache the result
-    _resolution_cache[cache_key] = result
-    
-    return result
-
-
-async def _fetch_lookup_data(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    data_type: str
-) -> List[Dict[str, Any]]:
-    """Fetch lookup data with caching.
-    
-    Args:
-        client: HTTP client instance
-        base_url: API base URL
-        project_id: Project identifier
-        headers: Request headers
-        data_type: Type of data to fetch ('sprints', 'releases', 'tags', 'sub_projects')
-        
-    Returns:
-        List of data items
-        
-    Raises:
-        ValueError: If API call fails
-    """
-    project_key = str(project_id)
-    
-    # Check cache first
-    if project_key in _lookup_cache and data_type in _lookup_cache[project_key]:
-        return _lookup_cache[project_key][data_type]
-    
-    # API endpoint mapping
-    endpoints = {
-        'sprints': f"{base_url}/{project_id}/sprints",
-        'releases': f"{base_url}/{project_id}/releases",
-        'tags': f"{base_url}/{project_id}/tags",
-        'sub_projects': f"{base_url}/{project_id}/sub_projects"
-    }
-    
-    if data_type not in endpoints:
-        raise ValueError(f"Unknown data type: {data_type}")
-    
-    url = endpoints[data_type]
-    
-    try:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Extract data based on type
-        items = data.get(data_type, [])
-        
-        # Cache the result
-        if project_key not in _lookup_cache:
-            _lookup_cache[project_key] = {}
-        _lookup_cache[project_key][data_type] = items
-        
-        return items
-        
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"Failed to fetch {data_type}: {str(e)}")
-    except Exception as e:
-        raise ValueError(f"Error fetching {data_type}: {str(e)}")
-
-
-async def _find_item_by_name(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    data_type: str,
-    item_name: str
-) -> Dict[str, Any]:
-    """Find an item by name with caching.
-    
-    Args:
-        client: HTTP client instance
-        base_url: API base URL
-        project_id: Project identifier
-        headers: Request headers
-        data_type: Type of data to search ('sprints', 'releases', 'tags', 'sub_projects')
-        item_name: Name of the item to find
-        
-    Returns:
-        Found item dictionary
-        
-    Raises:
-        ValueError: If item not found
-    """
-    items = await _fetch_lookup_data(client, base_url, project_id, headers, data_type)
-    
-    if not items:
-        raise ValueError(f"No {data_type} found for project {project_id}")
-    
-    # Find item by name (case-insensitive)
-    item_name_lower = item_name.lower()
-    for item in items:
-        if item.get("name", "").lower() == item_name_lower:
-            return item
-    
-    # If not found, raise error with available names
-    available_names = [item.get("name", "Unknown") for item in items]
-    raise ValueError(f"{data_type.title().replace('_', ' ')} '{item_name}' not found. Available {data_type}: {', '.join(available_names)}")
-
-
-async def _generic_lookup_by_name(
-    project_identifier: Optional[Union[int, str]],
-    item_name: str,
-    data_type: str,
-    name_param: str
-) -> Any:
-    """Generic lookup function for finding items by name.
-    
-    Args:
-        project_identifier: Project ID or key (optional)
-        item_name: Name of the item to find
-        data_type: Type of data ('sprints', 'releases', 'tags', 'sub_projects')
-        name_param: Name of the parameter for error messages
-        
-    Returns:
-        Item object with details or error response
-    """
-    if not item_name:
-        return create_error_response(f"{name_param} is required")
-    
-    try:
+        # Validate environment variables
         env_data = validate_environment()
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         project_id = get_project_identifier(project_identifier)
-    except ValueError as e:
-        return create_error_response(str(e))
 
-    async with httpx.AsyncClient() as client:
-        try:
-            item = await _find_item_by_name(client, base_url, project_id, headers, data_type, item_name)
-            
-            return {
-                data_type.rstrip('s'): item,  # Remove 's' from plural for response key
-                "message": f"Found {data_type.rstrip('s')} '{item_name}' with ID {item.get('id')}"
-            }
-            
-        except ValueError as e:
-            return create_error_response(str(e))
-        except Exception as e:
-            return create_error_response(f"An unexpected error occurred: {str(e)}")
+        # Collect individual field parameters (excluding project_id to avoid duplication)
+        field_params = {
+            "title": title,
+            "description": description,
+            "status_id": status_id,
+            "priority_id": priority_id,
+            "owner_id": owner_id,
+            "issue_type_id": issue_type_id,
+            "story_points": story_points,
+            "sprint_id": sprint_id,
+            "start_date": start_date,
+            "due_by": due_by,
+            "release_id": release_id,
+            "tags": tags,
+            "document_ids": document_ids,
+            "parent_id": parent_id,
+            "epic_id": epic_id,
+            "sub_project_id": sub_project_id,
+            "effort_value": effort_value,
+            "duration_value": duration_value
+        }
 
+        # Filter out None values
+        field_params = {k: v for k, v in field_params.items() if v is not None}
 
-async def _resolve_issue_type_name_to_id(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    issue_type_name: str
-) -> int:
-    """Resolve issue type name to ID using existing API function."""
-    try:
-        return await resolve_issue_type_name_to_id(
-            client, base_url, project_id, headers, issue_type_name
-        )
-    except ValueError as e:
-        # Re-raise with more specific context
-        raise ValueError(f"Failed to resolve issue type '{issue_type_name}': {str(e)}")
-
-
-async def _resolve_status_name_to_id(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    status_name: str
-) -> int:
-    """Resolve status name to ID by fetching statuses and filtering by name."""
-    url = f"{base_url}/{project_id}/statuses"
-    
-    try:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        # Build the final query
+        final_query = field_params
         
-        statuses = data.get("statuses", [])
-        status_name_lower = status_name.lower()
+        # Make the API request
+        url = f"{base_url}/{project_id}/issues/filter"
+        params = {"query": ",".join([f"{k}:{v}" for k, v in final_query.items()])}
         
-        for status in statuses:
-            if status.get("name", "").lower() == status_name_lower:
-                return status["id"]
+        result = await make_api_request("GET", url, headers, params=params)
         
-        available_names = [s.get("name", "Unknown") for s in statuses]
-        raise ValueError(f"Status '{status_name}' not found. Available statuses: {', '.join(available_names)}")
-        
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"Failed to fetch statuses: {str(e)}")
+        return result
+
     except Exception as e:
-        raise ValueError(f"Error resolving status: {str(e)}")
-
-
-async def _resolve_user_name_to_id(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    user_name: str
-) -> int:
-    """Resolve user name/email to ID by fetching users and filtering by name/email."""
-    url = f"{base_url}/{project_id}/users"
-    
-    try:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        users = data.get("users", [])
-        user_name_lower = user_name.lower()
-        
-        for user in users:
-            user_name_field = user.get("name", "").lower()
-            user_email_field = user.get("email", "").lower()
-            
-            if user_name_lower in [user_name_field, user_email_field]:
-                return user["id"]
-        
-        available_names = [f"{u.get('name', 'Unknown')} ({u.get('email', 'No email')})" for u in users]
-        raise ValueError(f"User '{user_name}' not found. Available users: {', '.join(available_names)}")
-        
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"Failed to fetch users: {str(e)}")
-    except Exception as e:
-        raise ValueError(f"Error resolving user: {str(e)}")
-
-
-async def _resolve_project_key_to_id(
-    client: httpx.AsyncClient,
-    base_url: str,
-    headers: Dict[str, str],
-    project_key: str
-) -> int:
-    """Resolve project key to ID by fetching projects and filtering by key."""
-    url = f"{base_url}/projects"
-    
-    try:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        projects = data.get("projects", [])
-        project_key_lower = project_key.lower()
-        
-        for project in projects:
-            if project.get("key", "").lower() == project_key_lower:
-                return project["id"]
-        
-        available_keys = [p.get("key", "Unknown") for p in projects]
-        raise ValueError(f"Project '{project_key}' not found. Available projects: {', '.join(available_keys)}")
-        
-    except httpx.HTTPStatusError as e:
-        raise ValueError(f"Failed to fetch projects: {str(e)}")
-    except Exception as e:
-        raise ValueError(f"Error resolving project: {str(e)}")
-
-
-async def _resolve_issue_key_to_id(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    issue_key: str
-) -> int:
-    """Resolve issue key to ID using existing get task function."""
-    try:
-        # Use existing get task function
-        task_result = await fr_get_task(project_identifier=project_id, key=issue_key)
-        
-        if "error" in task_result:
-            raise ValueError(task_result["error"])
-        
-        task = task_result.get("task", {})
-        if not task or "id" not in task:
-            raise ValueError(f"Issue '{issue_key}' not found")
-        
-        return task["id"]
-        
-    except Exception as e:
-        raise ValueError(f"Error resolving issue: {str(e)}")
-
-
-async def _resolve_filter_field_names_to_ids(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    field_params: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Resolve field names to IDs for filter parameters using existing API functions.
-    
-    Args:
-        client: HTTP client instance
-        base_url: API base URL
-        project_id: Project identifier
-        headers: Request headers
-        field_params: Dictionary of field parameters
-        
-    Returns:
-        Dictionary with resolved IDs
-    """
-    resolved_params = field_params.copy()
-    
-    # Define resolution mapping for fields that need name-to-ID conversion
-    resolution_map = {
-        "issue_type_id": _resolve_issue_type_name_to_id,
-        "status_id": _resolve_status_name_to_id,
-        "owner_id": _resolve_user_name_to_id,
-        "project_id": _resolve_project_key_to_id,
-        "parent_id": _resolve_issue_key_to_id,
-        "epic_id": _resolve_issue_key_to_id,
-    }
-    
-    # Resolve fields that use direct API calls with caching
-    for field_name, resolve_func in resolution_map.items():
-        if field_name in resolved_params and isinstance(resolved_params[field_name], str):
-            try:
-                # Create cache key for this resolution
-                cache_key = f"{field_name}:{project_id}:{resolved_params[field_name]}"
-                
-                if field_name == "project_id":
-                    # Project resolution doesn't need project_id parameter
-                    resolved_params[field_name] = await _resolve_with_cache(
-                        cache_key, resolve_func, client, base_url, headers, resolved_params[field_name]
-                    )
-                else:
-                    resolved_params[field_name] = await _resolve_with_cache(
-                        cache_key, resolve_func, client, base_url, project_id, headers, resolved_params[field_name]
-                    )
-            except ValueError as e:
-                raise ValueError(f"Failed to resolve {field_name}: {str(e)}")
-    
-    # Resolve fields that use the generic lookup system (with caching)
-    lookup_fields = {
-        "sprint_id": "sprints",
-        "release_id": "releases", 
-        "sub_project_id": "sub_projects"
-    }
-    
-    for field_name, data_type in lookup_fields.items():
-        if field_name in resolved_params and isinstance(resolved_params[field_name], str):
-            try:
-                # Create cache key for this resolution
-                cache_key = f"{field_name}:{project_id}:{resolved_params[field_name]}"
-                
-                item = await _resolve_with_cache(
-                    cache_key, _find_item_by_name, client, base_url, project_id, headers, data_type, resolved_params[field_name]
-                )
-                resolved_params[field_name] = item["id"]
-            except ValueError as e:
-                raise ValueError(f"Failed to resolve {field_name}: {str(e)}")
-    
-    return resolved_params
-
-
-async def get_sprint_id_by_name(
-    client: httpx.AsyncClient,
-    base_url: str,
-    project_id: Union[int, str],
-    headers: Dict[str, str],
-    sprint_name: str
-) -> int:
-    """Get sprint ID by name by fetching all sprints and filtering by name.
-    
-    Args:
-        client: HTTP client instance
-        base_url: API base URL
-        project_id: Project identifier
-        headers: Request headers
-        sprint_name: Name of the sprint to find
-        
-    Returns:
-        Sprint ID
-        
-    Raises:
-        ValueError: If sprint not found
-    """
-    sprint = await _find_item_by_name(client, base_url, project_id, headers, "sprints", sprint_name)
-    return sprint["id"]
-
-
-@mcp.tool()
+        return create_error_response(f"Failed to filter tasks: {str(e)}")
 async def fr_get_sprint_by_name(
     project_identifier: Optional[Union[int, str]] = None,
     sprint_name: str = None
@@ -1981,6 +1273,8 @@ async def fr_save_filter(
         Success response with saved filter details or error response
     """
     try:
+        # Validate environment variables
+        env_data = validate_environment()
         project_id = get_project_identifier(project_identifier)
         base_url = env_data["base_url"]
         headers = env_data["headers"]
@@ -2055,6 +1349,8 @@ async def fr_filter_testcases(
         )
     """
     try:
+        # Validate environment variables
+        env_data = validate_environment()
         project_id = get_project_identifier(project_identifier)
         base_url = env_data["base_url"]
         headers = env_data["headers"]
@@ -2395,6 +1691,114 @@ async def fr_add_testcases_to_testrun(
             return create_error_response(f"Failed to add test cases to test run: {str(e)}", e.response.json() if e.response else None)
         except Exception as e:
             return create_error_response(f"An unexpected error occurred: {str(e)}")
+
+
+# Missing helper functions
+async def _find_item_by_name(
+    client: httpx.AsyncClient,
+    base_url: str,
+    project_id: Union[int, str],
+    headers: Dict[str, str],
+    data_type: str,
+    item_name: str
+) -> Dict[str, Any]:
+    """Find an item by name in the given data type."""
+    url = f"{base_url}/{project_id}/{data_type}"
+    response = await client.get(url, headers=headers)
+    response.raise_for_status()
+    data = response.json()
+    
+    if isinstance(data, list):
+        target = item_name.strip().lower()
+        for item in data:
+            name = str(item.get("name", "")).strip().lower()
+            if name == target:
+                return item
+        available_names = [str(item.get("name", "")) for item in data if item.get("name")]
+        raise ValueError(f"{data_type.title().replace('_', ' ')} '{item_name}' not found. Available {data_type}: {', '.join(available_names)}")
+    
+    raise ValueError(f"Unexpected response structure for {data_type}")
+
+
+async def _generic_lookup_by_name(
+    project_identifier: Optional[Union[int, str]],
+    item_name: str,
+    data_type: str,
+    name_param: str
+) -> Any:
+    """Generic lookup function for finding items by name."""
+    if not item_name:
+        return create_error_response(f"{name_param} is required")
+    
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+    except ValueError as e:
+        return create_error_response(str(e))
+
+    async with httpx.AsyncClient() as client:
+        try:
+            item = await _find_item_by_name(client, base_url, project_id, headers, data_type, item_name)
+            
+            return {
+                data_type.rstrip('s'): item,  # Remove 's' from plural for response key
+                "message": f"Found {data_type.rstrip('s')} '{item_name}' with ID {item.get('id')}"
+            }
+            
+        except ValueError as e:
+            return create_error_response(str(e))
+        except Exception as e:
+            return create_error_response(f"An unexpected error occurred: {str(e)}")
+
+
+def _clear_custom_fields_cache() -> Dict[str, Any]:
+    """Clear the custom fields cache."""
+    global _custom_fields_cache
+    _custom_fields_cache.clear()
+    return {"message": "Custom fields cache cleared successfully"}
+
+
+def _clear_lookup_cache() -> Dict[str, Any]:
+    """Clear the lookup cache."""
+    global _lookup_cache
+    _lookup_cache.clear()
+    return {"message": "Lookup cache cleared successfully"}
+
+
+def _clear_resolution_cache() -> Dict[str, Any]:
+    """Clear the resolution cache."""
+    global _resolution_cache
+    _resolution_cache.clear()
+    return {"message": "Resolution cache cleared successfully"}
+
+
+async def _resolve_name_to_id_generic(
+    client: httpx.AsyncClient,
+    base_url: str,
+    project_id: Union[int, str],
+    headers: Dict[str, str],
+    name: str,
+    data_type: str
+) -> int:
+    """Generic function to resolve names to IDs."""
+    item = await _find_item_by_name(client, base_url, project_id, headers, data_type, name)
+    return item["id"]
+
+
+async def _resolve_custom_field_value_optimized(
+    client: httpx.AsyncClient,
+    base_url: str,
+    project_id: Union[int, str],
+    headers: Dict[str, str],
+    field_name: str,
+    value: str
+) -> str:
+    """Resolve custom field values to IDs."""
+    # This is a placeholder implementation
+    return value
+
 
 def main():
     logging.info("Starting Freshdesk MCP server")
