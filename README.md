@@ -12,10 +12,11 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 | **Project Management** | 2 | Create and retrieve projects |
 | **Task Management** | 4 | Create, retrieve, and manage tasks/issues |
 | **User Management** | 1 | Search and resolve users |
+| **Form Fields Management** | 3 | Get form fields for issues and test cases |
 | **Test Case Management** | 6 | List, filter, and manage test cases |
 | **Filtering & Search** | 4 | Advanced filtering for tasks and test cases |
 | **Lookup Functions** | 4 | Resolve names to IDs for various entities |
-| **Total** | **20** | **Complete Freshrelease integration** |
+| **Total** | **23** | **Complete Freshrelease integration** |
 
 ## Features
 
@@ -29,9 +30,9 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 
 ## Components
 
-### MCP Tools (20 Available)
+### MCP Tools (23 Available)
 
-The server offers 20 MCP tools for Freshrelease operations, organized by functionality:
+The server offers 23 MCP tools for Freshrelease operations, organized by functionality:
 
 #### **Project Management (2 tools)**
 - `fr_create_project`: Create a project
@@ -57,6 +58,19 @@ The server offers 20 MCP tools for Freshrelease operations, organized by functio
 #### **User Management (1 tool)**
 - `fr_search_users`: Search users by name or email within a project
   - Inputs: `project_identifier` (number|string, required), `search_text` (string, required)
+
+#### **Form Fields Management (3 tools)**
+- `fr_get_issue_form_fields`: Get form fields for issue creation and filtering
+  - Inputs: `project_identifier` (number|string, optional), `issue_type_id` (number|string, optional)
+  - Notes: Shows both standard and custom fields. Use `issue_type_id` to get fields specific to an issue type.
+
+- `fr_get_all_issue_type_form_fields`: Get form fields for all issue types in a project
+  - Inputs: `project_identifier` (number|string, optional)
+  - Notes: Returns form fields for each issue type (Bug, Task, Epic, etc.) to see field differences.
+
+- `fr_get_testcase_form_fields`: Get form fields for test case filtering
+  - Inputs: `project_identifier` (number|string, optional)
+  - Notes: Shows available fields for test case filter rules.
 
 #### **Test Case Management (6 tools)**
 - `fr_list_testcases`: List all test cases in a project

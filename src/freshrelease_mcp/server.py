@@ -399,7 +399,7 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
         return create_error_response(f"Failed to create project: {str(e)}")
 
 
-@mcp.tool()
+hanges
 @performance_monitor("fr_get_project")
 async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get a project from Freshrelease by ID or key.
@@ -1245,7 +1245,6 @@ async def fr_clear_filter_cache() -> Any:
         return create_error_response(f"Failed to clear cache: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_lookup_cache() -> Any:
     """Clear the lookup cache for sprints, releases, tags, and subprojects.
     
@@ -1261,8 +1260,6 @@ async def fr_clear_lookup_cache() -> Any:
     except Exception as e:
         return create_error_response(f"Failed to clear lookup cache: {str(e)}")
 
-
-@mcp.tool()
 async def fr_clear_resolution_cache() -> Any:
     """Clear the resolution cache for name-to-ID lookups.
     
@@ -1555,6 +1552,59 @@ async def fr_filter_testcases(
 
 
 @mcp.tool()
+@performance_monitor("fr_get_issue_form_fields")
+async def fr_get_issue_form_fields(
+    project_identifier: Optional[Union[int, str]] = None,
+    issue_type_id: Optional[Union[int, str]] = None
+) -> Any:
+    """Get available fields and their possible values for issue creation and filtering.
+    
+    This tool returns the form fields that can be used for creating issues and filtering.
+    It shows both standard fields and custom fields available for the project.
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        issue_type_id: Issue type ID or name to get specific form fields (optional)
+    
+    Returns:
+        Form fields data with available fields and their possible values
+    """
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+        
+        project_id = get_project_identifier(project_identifier)
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        client = get_http_client()
+
+        # Get issue form fields
+        url = f"{base_url}/{project_id}/issues/form"
+        
+        # Add issue type parameter if provided
+        params = {}
+        if issue_type_id:
+            # Resolve issue type name to ID if needed
+            if isinstance(issue_type_id, str) and not issue_type_id.isdigit():
+                issue_type_data = await _resolve_name_to_id_generic(
+                    issue_type_id, project_id, client, base_url, headers, "issue_types"
+                )
+                if isinstance(issue_type_data, dict) and "id" in issue_type_data:
+                    params["issue_type_id"] = issue_type_data["id"]
+                else:
+                    return create_error_response(f"Could not resolve issue type '{issue_type_id}' to ID")
+            else:
+                params["issue_type_id"] = issue_type_id
+        
+        return await make_api_request("GET", url, headers, client=client, params=params)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get issue form fields: {str(e)}")
+
+
+@mcp.tool()
 @performance_monitor("fr_get_testcase_form_fields")
 async def fr_get_testcase_form_fields(
     project_identifier: Optional[Union[int, str]] = None
@@ -1590,6 +1640,69 @@ async def fr_get_testcase_form_fields(
 
 
 @mcp.tool()
+@performance_monitor("fr_get_all_issue_type_form_fields")
+async def fr_get_all_issue_type_form_fields(
+    project_identifier: Optional[Union[int, str]] = None
+) -> Any:
+    """Get form fields for all issue types in a project.
+    
+    This tool fetches form fields for each issue type in the project, allowing you to see
+    what fields are available for different types of issues (Bug, Task, Epic, etc.).
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+    
+    Returns:
+        Dictionary with issue type names as keys and their form fields as values
+    """
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+        
+        project_id = get_project_identifier(project_identifier)
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        client = get_http_client()
+
+        # First, get all issue types
+        issue_types_url = f"{base_url}/{project_id}/issue_types"
+        issue_types_data = await make_api_request("GET", issue_types_url, headers, client=client)
+        
+        if not isinstance(issue_types_data, list):
+            return create_error_response("Failed to fetch issue types", issue_types_data)
+        
+        # Get form fields for each issue type
+        form_fields_by_type = {}
+        
+        for issue_type in issue_types_data:
+            issue_type_id = issue_type.get("id")
+            issue_type_name = issue_type.get("name", f"Type_{issue_type_id}")
+            
+            if issue_type_id:
+                try:
+                    form_url = f"{base_url}/{project_id}/issues/form"
+                    form_data = await make_api_request(
+                        "GET", form_url, headers, client=client, 
+                        params={"issue_type_id": issue_type_id}
+                    )
+                    form_fields_by_type[issue_type_name] = form_data
+                except Exception as e:
+                    form_fields_by_type[issue_type_name] = {
+                        "error": f"Failed to fetch form fields: {str(e)}"
+                    }
+        
+        return {
+            "project_id": project_id,
+            "issue_types": form_fields_by_type,
+            "total_issue_types": len(issue_types_data)
+        }
+
+    except Exception as e:
+        return create_error_response(f"Failed to get all issue type form fields: {str(e)}")
+
+
 async def fr_clear_testcase_form_cache() -> Any:
     """Clear the test case form cache.
     
@@ -1631,7 +1744,6 @@ async def fr_clear_all_caches() -> Any:
         return create_error_response(f"Failed to clear caches: {str(e)}")
 
 
-@mcp.tool()
 async def fr_get_performance_stats() -> Dict[str, Any]:
     """Get performance statistics for all monitored functions.
     
@@ -1645,7 +1757,6 @@ async def fr_get_performance_stats() -> Dict[str, Any]:
         return create_error_response(f"Failed to get performance stats: {str(e)}")
 
 
-@mcp.tool()
 async def fr_clear_performance_stats() -> Dict[str, Any]:
     """Clear performance statistics.
     
@@ -1658,8 +1769,6 @@ async def fr_clear_performance_stats() -> Dict[str, Any]:
     except Exception as e:
         return create_error_response(f"Failed to clear performance stats: {str(e)}")
 
-
-@mcp.tool()
 async def fr_close_http_client() -> Dict[str, Any]:
     """Close the global HTTP client to free resources.
     
