@@ -399,7 +399,6 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
         return create_error_response(f"Failed to create project: {str(e)}")
 
 
-hanges
 @performance_monitor("fr_get_project")
 async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get a project from Freshrelease by ID or key.
