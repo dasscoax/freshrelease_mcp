@@ -1983,6 +1983,42 @@ async def _resolve_user_name_to_id(
         raise ValueError(f"Failed to resolve user '{user_identifier}': {str(e)}")
 
 
+async def _resolve_subproject_name_to_id(
+    sub_project_name: str,
+    project_id: Union[int, str]
+) -> int:
+    """Resolve sub-project name to ID using the utility function.
+    
+    This function integrates the new get_subproject_id_by_name utility
+    with the existing field resolution system for task filtering.
+    
+    Note: The project_id parameter is kept for compatibility with the field resolver
+    system, but the utility function uses the environment variable.
+    
+    Args:
+        sub_project_name: Name of the sub-project to resolve
+        project_id: Project ID or key (unused - kept for compatibility)
+        
+    Returns:
+        Sub-project ID as integer
+        
+    Raises:
+        ValueError: If sub-project name cannot be resolved with helpful error message
+    """
+    # Use the utility function for consistent sub-project resolution
+    result = await get_subproject_id_by_name(sub_project_name)
+    
+    if "error" in result:
+        # If there's an error, raise an exception with helpful info
+        available = ", ".join(result.get("available_sub_projects", []))
+        error_msg = result["error"]
+        if available:
+            error_msg += f". Available sub-projects: {available}"
+        raise ValueError(error_msg)
+    
+    return result["sub_project_id"]
+
+
 async def _resolve_query_fields(
     query_pairs: List[tuple],
     project_id: Union[int, str],
@@ -2007,7 +2043,7 @@ async def _resolve_query_fields(
         "issue_type_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "issue_types"),
         "sprint_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sprints"),
         "release_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "releases"),
-        "sub_project_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sub_projects"),
+        "sub_project_id": lambda value: _resolve_subproject_name_to_id(value, project_id),
     }
     
     for field_name, value in query_pairs:
@@ -2064,8 +2100,188 @@ async def _resolve_custom_field_value_optimized(
     return value
 
 
+async def get_subproject_id_by_name(
+    sub_project_name: str
+) -> Dict[str, Any]:
+    """Utility function to get sub-project ID and info by name.
+    
+    This utility function can be used by other MCP tools that need to resolve
+    sub-project names to IDs. It provides consistent error handling and caching.
+    
+    Usage Example in other functions:
+        subproject_result = await get_subproject_id_by_name("Frontend Development")
+        if "error" in subproject_result:
+            return subproject_result
+        sub_project_id = subproject_result["sub_project_id"]
+        sub_project_info = subproject_result["sub_project_info"]
+    
+    Args:
+        sub_project_name: Name of the sub-project to find (required)
+        
+    Returns:
+        Dictionary with sub_project_id, sub_project_info, or error
+        Format: {"sub_project_id": int, "sub_project_info": dict} or {"error": str, "available_sub_projects": list}
+    """
+    try:
+        project_id = get_project_identifier()
+        
+        if not sub_project_name:
+            return {"error": "sub_project_name is required"}
+        
+        headers = {
+            "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        client = get_http_client()
+        
+        # Get all sub-projects to find the ID by name
+        # Handle both project keys (like "FS", "PROJ") and project IDs (like 123)
+        sub_projects_url = f"https://{FRESHRELEASE_DOMAIN}/api/{project_id}/sub_projects"
+        
+        logging.info(f"Fetching sub-projects from: {sub_projects_url}")
+        sub_projects_response = await client.get(sub_projects_url, headers=headers)
+        
+        if sub_projects_response.status_code != 200:
+            logging.error(f"Failed to fetch sub-projects: {sub_projects_response.status_code}")
+            return {
+                "error": f"Failed to fetch sub-projects: {sub_projects_response.status_code}",
+                "details": sub_projects_response.text
+            }
+        
+        sub_projects_data = sub_projects_response.json()
+        
+        # Handle the standard sub-projects API response structure
+        if isinstance(sub_projects_data, dict) and "sub_projects" in sub_projects_data:
+            sub_projects = sub_projects_data["sub_projects"]
+        else:
+            logging.error(f"Unexpected sub-projects API response structure: {sub_projects_data}")
+            return {
+                "error": f"Unexpected response structure for sub_projects API",
+                "response_keys": list(sub_projects_data.keys()) if isinstance(sub_projects_data, dict) else None,
+                "response_type": str(type(sub_projects_data))
+            }
+        
+        # Validate we have a list of sub-projects
+        if not isinstance(sub_projects, list):
+            return {
+                "error": f"Expected sub_projects to be a list, got {type(sub_projects)}",
+                "sub_projects_value": sub_projects
+            }
+        
+        # Find sub-project by name (case-insensitive)
+        for sub_project in sub_projects:
+            if sub_project.get("name", "").lower() == sub_project_name.lower():
+                return {
+                    "sub_project_id": sub_project.get("id"),
+                    "sub_project_info": sub_project
+                }
+        
+        # Sub-project not found
+        available_names = [sp.get("name", "") for sp in sub_projects]
+        return {
+            "error": f"Sub-project '{sub_project_name}' not found",
+            "available_sub_projects": available_names
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting sub-project ID by name: {str(e)}")
+        return {"error": f"Failed to get sub-project ID: {str(e)}"}
+
+
+@mcp.tool()
+@performance_monitor("fr_get_current_subproject_sprint")
+async def fr_get_current_subproject_sprint(
+    sub_project_name: str
+) -> Dict[str, Any]:
+    """Get the current active sprint for a sub-project by name.
+    
+    This function first resolves the sub-project name to ID, then fetches
+    the active sprints for that sub-project and returns the current one.
+    
+    Args:
+        sub_project_name: Name of the sub-project to get current sprint for (required)
+        
+    Returns:
+        Current active sprint data or error response
+        
+    Examples:
+        # Get current sprint for a sub-project (uses FRESHRELEASE_PROJECT_KEY)
+        fr_get_current_subproject_sprint(sub_project_name="Frontend Development")
+        
+        # Get current sprint for Backend API sub-project
+        fr_get_current_subproject_sprint(sub_project_name="Backend API")
+    """
+    try:
+        # Step 1: Get sub-project ID by name using utility function
+        subproject_result = await get_subproject_id_by_name(sub_project_name)
+        
+        if "error" in subproject_result:
+            return subproject_result
+        
+        sub_project_id = subproject_result["sub_project_id"]
+        sub_project_info = subproject_result["sub_project_info"]
+        
+        # Get project identifier (avoid redundant call since utility function already calls this)
+        project_id = get_project_identifier()
+        
+        headers = {
+            "Authorization": f"Token {FRESHRELEASE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        client = get_http_client()
+        
+        # Step 2: Get active sprints for the sub-project
+        # Handle both project keys (like "FS", "PROJ") and project IDs (like 123)
+        # The sprints API can accept both project keys and IDs
+        sprints_url = f"https://{FRESHRELEASE_DOMAIN}/api/{project_id}/sprints"
+        sprints_params = {
+            "primary_workspace_id": sub_project_id,
+            "query_hash[0][condition]": "state",
+            "query_hash[0][operator]": "is_in", 
+            "query_hash[0][value]": "2"  # 2 = active state
+        }
+        
+        logging.info(f"Fetching active sprints from: {sprints_url}")
+        logging.info(f"Sprint params: {sprints_params}")
+        
+        sprints_response = await client.get(sprints_url, headers=headers, params=sprints_params)
+        
+        if sprints_response.status_code != 200:
+            logging.error(f"Failed to fetch sprints: {sprints_response.status_code}")
+            return {
+                "error": f"Failed to fetch sprints: {sprints_response.status_code}",
+                "details": sprints_response.text
+            }
+        
+        sprints_data = sprints_response.json()
+        sprints = sprints_data.get("sprints", [])
+        
+        if not sprints:
+            return {
+                "message": f"No active sprints found for sub-project '{sub_project_name}'",
+                "sub_project": sub_project_info,
+                "active_sprints": []
+            }
+        
+        # Return the first active sprint (current sprint)
+        current_sprint = sprints[0]
+        
+        return {
+            "current_sprint": current_sprint,
+            "sub_project": sub_project_info,
+            "total_active_sprints": len(sprints),
+            "all_active_sprints": sprints
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting current sub-project sprint: {str(e)}")
+        return {"error": f"Failed to get current sub-project sprint: {str(e)}"}
+
+
 def main():
-    logging.info("Starting Freshdesk MCP server")
+    logging.info("Starting Freshrelease MCP server")
     mcp.run(transport='stdio')
 
 if __name__ == "__main__":

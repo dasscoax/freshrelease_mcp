@@ -16,7 +16,7 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 | **Test Case Management** | 6 | List, filter, and manage test cases |
 | **Filtering & Search** | 4 | Advanced filtering for tasks and test cases |
 | **Lookup Functions** | 4 | Resolve names to IDs for various entities |
-| **Total** | **23** | **Complete Freshrelease integration** |
+| **Total** | **24** | **Complete Freshrelease integration** |
 
 ## Features
 
@@ -30,9 +30,9 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 
 ## Components
 
-### MCP Tools (23 Available)
+### MCP Tools (24 Available)
 
-The server offers 23 MCP tools for Freshrelease operations, organized by functionality:
+The server offers 24 MCP tools for Freshrelease operations, organized by functionality:
 
 #### **Project Management (2 tools)**
 - `fr_create_project`: Create a project
@@ -123,6 +123,10 @@ The server offers 23 MCP tools for Freshrelease operations, organized by functio
 - `fr_get_subproject_by_name`: Get subproject ID by name
   - Inputs: `project_identifier` (number|string, optional), `subproject_name` (string, required)
 
+- `fr_get_current_subproject_sprint`: Get the current active sprint for a sub-project by name
+  - Inputs: `sub_project_name` (string, required)
+  - Notes: Uses FRESHRELEASE_PROJECT_KEY environment variable. Resolves sub-project name to ID, then fetches active sprints. Returns the current sprint with sub-project info and all active sprints.
+
 
 
 ## Advanced Features
@@ -134,7 +138,13 @@ The server includes advanced performance monitoring and caching systems that ope
 - **Connection Pooling**: Global HTTP client with connection reuse for efficient API calls
 - **Batch Processing**: Parallel resolution of multiple names to IDs for improved performance
 
-*Note: Performance and cache management functions are available internally but not exposed as MCP tools to keep the interface clean and focused on core Freshrelease functionality.*
+### Internal Utility Functions
+The server includes utility functions for code reuse across MCP tools:
+- **`get_subproject_id_by_name()`**: Resolves sub-project names to IDs using default project from environment
+- **`_resolve_subproject_name_to_id()`**: Integration wrapper for task filtering system
+- Used internally by sprint functions, task filtering, and other sub-project related functions for consistent name resolution
+
+*Note: Performance, cache management, and utility functions are available internally but not exposed as MCP tools to keep the interface clean and focused on core Freshrelease functionality.*
 
 ### Smart Name Resolution
 The server automatically converts human-readable names to Freshrelease IDs:
@@ -143,8 +153,15 @@ The server automatically converts human-readable names to Freshrelease IDs:
 - **Status Names** → Status IDs
 - **Sprint Names** → Sprint IDs
 - **Release Names** → Release IDs
-- **Project Keys** → Project IDs
+- **Sub-Project Names** → Sub-Project IDs
+- **Project Keys** → Project IDs (when needed)
 - **Issue Keys** → Issue IDs
+
+### Project Identifier Flexibility
+All functions accept both **project keys** and **project IDs**:
+- **Project Keys**: String identifiers like `"FS"`, `"PROJ"`, `"DEV"`
+- **Project IDs**: Numeric identifiers like `123`, `456`, `789`
+- **Auto-fallback**: Uses `FRESHRELEASE_PROJECT_KEY` environment variable if not specified
 
 ### Custom Field Detection
 - **Automatic Detection**: Fetches custom fields from Freshrelease form API
@@ -254,7 +271,7 @@ uv tool install . --force
 
 3. **Restart Cursor** completely
 
-4. **Verify Setup**: You should see 23+ Freshrelease MCP tools available in Cursor:
+4. **Verify Setup**: You should see 24+ Freshrelease MCP tools available in Cursor:
    - `fr_create_task`, `fr_get_all_tasks`, `fr_filter_tasks`
    - `fr_get_testcase`, `fr_filter_testcases`, `fr_link_testcase_issues`
    - And many more!
@@ -307,17 +324,24 @@ fr_create_project(name="My Project", description="Project description")
 
 # Create a task with smart name resolution
 fr_create_task(
+    project_identifier="FS",  # Project key
     title="Fix bug in login",
     issue_type_name="Bug",  # Automatically resolved to ID
     user="john@example.com",  # Automatically resolved to assignee_id
     status="In Progress"  # Automatically resolved to status ID
 )
 
-# Filter tasks with advanced criteria
+# Filter tasks with advanced criteria using project ID
 fr_filter_tasks(
+    project_identifier=123,  # Project ID
     owner_id="John Doe",  # Name automatically resolved to ID
     status_id="In Progress",  # Status name resolved to ID
     sprint_id="Sprint 1"  # Sprint name resolved to ID
+)
+
+# Get current sub-project sprint (uses FRESHRELEASE_PROJECT_KEY)
+fr_get_current_subproject_sprint(
+    sub_project_name="Frontend Development"
 )
 ```
 
@@ -368,6 +392,12 @@ tasks = fr_filter_tasks(
 # Using query format
 tasks = fr_filter_tasks(
     query="owner_id:John Doe,status_id:In Progress,cf_priority:High"
+)
+
+# Filter by sub-project name (automatically resolved to ID)
+tasks = fr_filter_tasks(
+    sub_project_id="Frontend Development",
+    status_id="In Progress"
 )
 ```
 
