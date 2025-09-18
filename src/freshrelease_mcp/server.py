@@ -1203,29 +1203,6 @@ async def fr_get_tag_by_name(
     return await _generic_lookup_by_name(project_identifier, tag_name, "tags", "tag_name")
 
 
-@mcp.tool()
-async def fr_get_subproject_by_name(
-    project_identifier: Optional[Union[int, str]] = None,
-    subproject_name: str = None
-) -> Any:
-    """Get subproject ID by name by fetching all subprojects and filtering by name.
-
-    Args:
-        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
-        subproject_name: Name of the subproject to find (required)
-        
-    Returns:
-        Subproject object with ID and details or error response
-        
-    Examples:
-        # Get subproject by name
-        fr_get_subproject_by_name(subproject_name="Frontend")
-        
-        # Get subproject by name for specific project
-        fr_get_subproject_by_name(project_identifier="PROJ123", subproject_name="Frontend")
-    """
-    return await _generic_lookup_by_name(project_identifier, subproject_name, "sub_projects", "subproject_name")
-
 
 @mcp.tool()
 async def fr_clear_filter_cache() -> Any:
@@ -2099,7 +2076,7 @@ async def _resolve_custom_field_value_optimized(
     # This is a placeholder implementation
     return value
 
-
+@mcp.tool()
 async def get_subproject_id_by_name(
     sub_project_name: str
 ) -> Dict[str, Any]:
@@ -2137,7 +2114,7 @@ async def get_subproject_id_by_name(
         
         # Get all sub-projects to find the ID by name
         # Handle both project keys (like "FS", "PROJ") and project IDs (like 123)
-        sub_projects_url = f"https://{FRESHRELEASE_DOMAIN}/api/{project_id}/sub_projects"
+        sub_projects_url = f"https://{FRESHRELEASE_DOMAIN}/{project_id}/sub_projects"
         
         logging.info(f"Fetching sub-projects from: {sub_projects_url}")
         sub_projects_response = await client.get(sub_projects_url, headers=headers)
@@ -2235,7 +2212,7 @@ async def fr_get_current_subproject_sprint(
         # Step 2: Get active sprints for the sub-project
         # Handle both project keys (like "FS", "PROJ") and project IDs (like 123)
         # The sprints API can accept both project keys and IDs
-        sprints_url = f"https://{FRESHRELEASE_DOMAIN}/api/{project_id}/sprints"
+        sprints_url = f"https://{FRESHRELEASE_DOMAIN}/{project_id}/sprints"
         sprints_params = {
             "primary_workspace_id": sub_project_id,
             "query_hash[0][condition]": "state",

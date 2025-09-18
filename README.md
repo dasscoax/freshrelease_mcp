@@ -3,7 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/freshrelease-mcp.svg)](https://badge.fury.io/py/freshrelease-mcp)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks through 20 powerful MCP tools.
+An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks through 22 powerful MCP tools.
 
 ## Quick Reference
 
@@ -32,7 +32,7 @@ An MCP server implementation that integrates with Freshrelease, enabling AI mode
 
 ### MCP Tools (24 Available)
 
-The server offers 24 MCP tools for Freshrelease operations, organized by functionality:
+The server offers 22 MCP tools for Freshrelease operations, organized by functionality:
 
 #### **Project Management (2 tools)**
 - `fr_create_project`: Create a project
@@ -119,9 +119,6 @@ The server offers 24 MCP tools for Freshrelease operations, organized by functio
 
 - `fr_get_tag_by_name`: Get tag ID by name
   - Inputs: `project_identifier` (number|string, optional), `tag_name` (string, required)
-
-- `fr_get_subproject_by_name`: Get subproject ID by name
-  - Inputs: `project_identifier` (number|string, optional), `subproject_name` (string, required)
 
 - `fr_get_current_subproject_sprint`: Get the current active sprint for a sub-project by name
   - Inputs: `sub_project_name` (string, required)
@@ -271,7 +268,7 @@ uv tool install . --force
 
 3. **Restart Cursor** completely
 
-4. **Verify Setup**: You should see 24+ Freshrelease MCP tools available in Cursor:
+4. **Verify Setup**: You should see 22+ Freshrelease MCP tools available in Cursor:
    - `fr_create_task`, `fr_get_all_tasks`, `fr_filter_tasks`
    - `fr_get_testcase`, `fr_filter_testcases`, `fr_link_testcase_issues`
    - And many more!
