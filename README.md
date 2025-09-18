@@ -160,10 +160,138 @@ The server automatically converts human-readable names to Freshrelease IDs:
 
 ## Getting Started
 
-### Installation
+### Installation Options
+
+#### Option 1: For End Users (No Python Installation Required)
 ```bash
+# Install uv (one-time setup)
+curl -LsSf https://astral.sh/uv/install.sh | sh  # macOS/Linux
+# OR
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+
+# The MCP will be installed automatically via uvx when needed
+```
+
+#### Option 2: For Users with Python + uv Installed  
+```bash
+# Install as uv tool (recommended - faster startup)
+uv tool install freshrelease-mcp
+
+# OR install with pip
 pip install freshrelease-mcp
 ```
+
+#### Option 3: For Local installation
+```bash
+# Clone and install in development mode
+git clone <repository-url>
+cd freshrelease-mcp
+uv tool install . --force
+```
+
+## Cursor IDE Setup
+
+### Quick Setup (3 minutes)
+
+1. **Get your Freshrelease credentials:**
+   - **API Key**: Go to Freshrelease → Profile → API Key
+   - **Domain**: Your Freshrelease URL (e.g., `company.freshrelease.com`)  
+   - **Project Key**: Your project identifier (e.g., `PROJ`, `FS`)
+
+2. **Configure Cursor** by adding to `~/.cursor/mcp.json`:
+
+#### Configuration A: No Python Required (uvx method)
+```json
+{
+  "mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uvx",
+      "args": ["freshrelease-mcp"],
+      "env": {
+        "FRESHRELEASE_API_KEY": "your_api_key_here",
+        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com",
+        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
+      }
+    }
+  }
+}
+```
+
+#### Configuration B: With Python/uv Installed (faster startup)
+```json
+{
+  "mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uv",
+      "args": ["tool", "run", "freshrelease-mcp"],
+      "env": {
+        "FRESHRELEASE_API_KEY": "your_api_key_here",
+        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com", 
+        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
+      }
+    }
+  }
+}
+```
+
+#### Configuration C: Local Development
+```json
+{
+  "mcpServers": {
+    "freshrelease-mcp": {
+      "command": "uv",
+      "args": ["tool", "run", "freshrelease-mcp"],
+      "env": {
+        "FRESHRELEASE_API_KEY": "your_api_key_here",
+        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com",
+        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
+      },
+      "cwd": "/path/to/freshrelease_mcp"
+    }
+  }
+}
+```
+
+3. **Restart Cursor** completely
+
+4. **Verify Setup**: You should see 23+ Freshrelease MCP tools available in Cursor:
+   - `fr_create_task`, `fr_get_all_tasks`, `fr_filter_tasks`
+   - `fr_get_testcase`, `fr_filter_testcases`, `fr_link_testcase_issues`
+   - And many more!
+
+### Performance Comparison
+
+| Method | Startup Time | Requires Python | Offline Support | Best For |
+|--------|-------------|----------------|-----------------|----------|
+| **uvx** | ~3-5 seconds | ❌ No | ❌ No | End users, clean systems |
+| **uv tool** | **~1 second** | ✅ Yes | ✅ Yes | **Developers, fastest option** |
+| **Virtual env** | ~0.5 seconds | ✅ Yes | ✅ Yes | Advanced users |
+
+### Troubleshooting
+
+#### Not seeing tools in Cursor?
+1. Check `~/.cursor/mcp.json` syntax is valid JSON
+2. Verify your environment variables are correct
+3. Restart Cursor completely 
+4. Check Cursor's developer console for errors
+
+#### Test MCP directly:
+```bash
+# Test uvx approach
+uvx freshrelease-mcp --help
+
+# Test uv tool approach  
+uv tool run freshrelease-mcp --help
+
+# Clear cache if needed
+uv cache clean
+uvx --reinstall freshrelease-mcp
+```
+
+#### Verify credentials:
+- Test your API key works with Freshrelease API
+- Ensure domain format is `company.freshrelease.com` (no https://)
+- Check project key exists in your Freshrelease account
 
 ### Environment Setup
 ```bash
