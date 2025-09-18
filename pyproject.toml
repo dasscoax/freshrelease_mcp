@@ -1,13 +1,23 @@
 [project]
 name = "freshrelease-mcp"
-version = "1.6.4"
-description = "An MCP server for Freshrelease"
+version = "1.6.5"
+description = "An MCP server for Freshrelease - enables Cursor AI to interact with Freshrelease projects"
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["mcp", "freshrelease", "cursor", "ai", "assistant"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers", 
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
-    "build>=1.2.2.post1",
-    "httpx==0.28.1",
-    "mcp[cli]>=1.3.0",
+    "httpx>=0.28.1",
+    "mcp>=1.3.0", 
     "pydantic>=2.10.6",
 ]
 
