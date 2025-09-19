@@ -224,31 +224,6 @@ def get_standard_fields() -> frozenset:
     return frozenset(_STANDARD_FIELDS)
 
 
-async def get_project_custom_fields(client: httpx.AsyncClient, base_url: str, project_id: Union[int, str], headers: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Fetch custom fields for a project from the form API with caching."""
-    project_key = str(project_id)
-    
-    # Return cached result if available
-    if project_key in _custom_fields_cache:
-        return _custom_fields_cache[project_key]
-    
-    url = f"{base_url}/{project_id}/issues/form"
-    
-    try:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        custom_fields = data.get("custom_fields", [])
-        
-        # Cache the result
-        _custom_fields_cache[project_key] = custom_fields
-        return custom_fields
-    except Exception:
-        # If custom fields API fails, cache empty list and return it
-        _custom_fields_cache[project_key] = []
-        return []
-
-
 def is_custom_field(field_name: str, custom_fields: List[Dict[str, Any]]) -> bool:
     """Check if a field name is a custom field based on the custom fields list."""
     # Quick check: if it's a standard field, it's not custom
@@ -353,16 +328,6 @@ def parse_link_header(link_header: str) -> Dict[str, Optional[int]]:
 
     return pagination
 
-# Status categories from Freshrelease repository
-class STATUS_CATEGORIES(str, Enum):
-    todo = 1
-    in_progress = 2
-    done = 3
-
-class STATUS_CATEGORY_NAMES(str, Enum):
-    YET_TO_START = "Yet To Start"
-    WORK_IN_PROGRESS = "Work In Progress"
-    COMPLETED = "Completed"
 
 class TASK_STATUS(str, Enum):
     """Machine-friendly task status values supported by the API."""
@@ -370,8 +335,6 @@ class TASK_STATUS(str, Enum):
     IN_PROGRESS = "in_progress"
     DONE = "done"
 
-@mcp.tool()
-@performance_monitor("fr_create_project")
 async def fr_create_project(name: str, description: Optional[str] = None) -> Dict[str, Any]:
     """Create a project in Freshrelease.
     
@@ -398,7 +361,7 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
     except Exception as e:
         return create_error_response(f"Failed to create project: {str(e)}")
 
-
+@mcp.tool()
 @performance_monitor("fr_get_project")
 async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
     """Get a project from Freshrelease by ID or key.
@@ -551,8 +514,6 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None)
     except Exception as e:
         return create_error_response(f"Failed to get all tasks: {str(e)}")
 
-@mcp.tool()
-@performance_monitor("fr_get_issue_type_by_name")
 async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]] = None, issue_type_name: str = None) -> Dict[str, Any]:
     """Fetch the issue type object for a given human name within a project.
 
@@ -576,18 +537,113 @@ async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]
         url = f"{base_url}/{project_id}/issue_types"
         data = await make_api_request("GET", url, headers)
         
-        # Expecting a list of objects with a 'name' property
+        # Expecting a list of objects with a 'label' property
         if isinstance(data, list):
             target = issue_type_name.strip().lower()
             for item in data:
-                name = str(item.get("name", "")).strip().lower()
-                if name == target:
+                label = str(item.get("label", "")).strip().lower()
+                if label == target:
                     return item
             return create_error_response(f"Issue type '{issue_type_name}' not found")
         return create_error_response("Unexpected response structure for issue types", data)
 
     except Exception as e:
         return create_error_response(f"Failed to get issue type: {str(e)}")
+
+
+@mcp.tool()
+async def get_task_default_and_custom_fields(
+    project_identifier: Optional[Union[int, str]] = None,
+    issue_type_name: str = None
+) -> Dict[str, Any]:
+    """Get default and custom fields for a specific issue type by fetching form details.
+    
+    This method:
+    1. Gets issue type ID from issue type name using fr_get_issue_type_by_name
+    2. Gets form ID from project_issue_types mapping API
+    3. Gets form details including all fields (standard and custom) from forms API
+    
+    Args:
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        issue_type_name: Issue type name to get default and custom fields for (required)
+        
+    Returns:
+        Form details with all fields information (default and custom) or error response
+        
+    Examples:
+        # Get default and custom fields for Bug issue type
+        get_task_default_and_custom_fields(issue_type_name="Bug")
+        
+        # Get default and custom fields for Story issue type in specific project
+        get_task_default_and_custom_fields(project_identifier="FS", issue_type_name="Story")
+    """
+    try:
+        # Validate inputs
+        if not issue_type_name:
+            return create_error_response("issue_type_name is required")
+        
+        # Step 1: Get issue type details using the existing function
+        issue_type_result = await fr_get_issue_type_by_name(project_identifier, issue_type_name)
+        if "error" in issue_type_result:
+            return issue_type_result
+        
+        issue_type_id = issue_type_result.get("id")
+        if not issue_type_id:
+            return create_error_response("Could not extract issue_type_id from issue type result")
+        
+        # Get environment data
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        
+        client = get_http_client()
+        
+        # Step 2: Get project_issue_types mapping to find form_id
+        project_issue_types_url = f"{base_url}/{project_id}/project_issue_types"
+        logging.info(f"Fetching project issue types from: {project_issue_types_url}")
+        
+        project_issue_types_response = await client.get(project_issue_types_url, headers=headers)
+        project_issue_types_response.raise_for_status()
+        project_issue_types_data = project_issue_types_response.json()
+        
+        # Find the form_id for our issue_type_id
+        project_issue_types_list = project_issue_types_data.get("project_issue_types", [])
+        form_id = None
+        
+        for mapping in project_issue_types_list:
+            if mapping.get("issue_type_id") == issue_type_id:
+                form_id = mapping.get("form_id")
+                break
+        
+        if not form_id:
+            return create_error_response(f"No form found for issue type '{issue_type_name}' (ID: {issue_type_id})")
+        
+        # Step 3: Get form details using form_id
+        form_url = f"{base_url}/{project_id}/forms/{form_id}"
+        logging.info(f"Fetching form details from: {form_url}")
+        
+        form_response = await client.get(form_url, headers=headers)
+        form_response.raise_for_status()
+        form_data = form_response.json()
+        
+        # Add metadata to the response
+        result = {
+            "issue_type_info": {
+                "id": issue_type_id,
+                "name": issue_type_name,
+                "details": issue_type_result
+            },
+            "form_id": form_id,
+            **form_data
+        }
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error getting project custom fields: {str(e)}")
+        return create_error_response(f"Failed to get project custom fields: {str(e)}")
+
 
 @mcp.tool()
 async def fr_search_users(project_identifier: Optional[Union[int, str]] = None, search_text: str = None) -> Any:
@@ -701,14 +757,14 @@ async def resolve_issue_type_name_to_id(
     headers: Dict[str, str],
     issue_type_name: str
 ) -> int:
-    """Resolve issue type name to ID.
+    """Resolve issue type name to ID using the label field.
     
     Args:
         client: HTTP client instance
         base_url: API base URL
         project_identifier: Project identifier
         headers: Request headers
-        issue_type_name: Issue type name to resolve
+        issue_type_name: Issue type name to resolve (matches against label field)
         
     Returns:
         Resolved issue type ID
@@ -717,7 +773,7 @@ async def resolve_issue_type_name_to_id(
         ValueError: If issue type not found
         httpx.HTTPStatusError: For API errors
     """
-    issue_types_url = f"{base_url}/{project_identifier}/project_issue_types"
+    issue_types_url = f"{base_url}/{project_identifier}/issue_types"
     response = await client.get(issue_types_url, headers=headers)
     response.raise_for_status()
     it_data = response.json()
@@ -726,11 +782,11 @@ async def resolve_issue_type_name_to_id(
     target = issue_type_name.strip().lower()
     
     for t in types_list:
-        name = str(t.get("name", "")).strip().lower()
-        if name == target:
+        label = str(t.get("label", "")).strip().lower()
+        if label == target:
             return t.get("id")
     
-    raise ValueError(f"Issue type '{issue_type_name}' not found")
+    raise ValueError(f"Issue type with label '{issue_type_name}' not found")
 
 
 async def resolve_section_hierarchy_to_ids(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], section_path: str) -> List[int]:
@@ -956,6 +1012,93 @@ async def fr_get_testcases_by_section(project_identifier: Optional[Union[int, st
         except Exception as e:
             return create_error_response(f"An unexpected error occurred: {str(e)}")
 
+async def _get_project_fields_mapping(
+    project_id: Union[int, str],
+    project_identifier: Optional[Union[int, str]] = None
+) -> Dict[str, Any]:
+    """Helper function to get field mappings (label to name) for filtering.
+    
+    This function:
+    1. Gets all issue types for the project
+    2. Uses the first issue type to get form fields
+    3. Creates a mapping from field labels to field names
+    4. Returns both the mapping and custom fields information
+    
+    Args:
+        project_id: Project ID (resolved)
+        project_identifier: Original project identifier for API calls
+        
+    Returns:
+        Dictionary containing field_label_to_name_map and custom_fields
+    """
+    try:
+        # Get all issue types to find one to use for form fields
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        
+        client = get_http_client()
+        
+        # Get issue types
+        issue_types_url = f"{base_url}/{project_id}/issue_types"
+        response = await client.get(issue_types_url, headers=headers)
+        response.raise_for_status()
+        issue_types_data = response.json()
+        
+        if not issue_types_data or len(issue_types_data) == 0:
+            return {"error": "No issue types found in project"}
+        
+        # Use the first issue type's label to get form fields
+        first_issue_type = issue_types_data[0]
+        issue_type_name = first_issue_type.get("label", "")
+        
+        if not issue_type_name:
+            return {"error": "Issue type has no label"}
+        
+        # Get form fields using the get_task_default_and_custom_fields method
+        form_result = await get_task_default_and_custom_fields(project_identifier, issue_type_name)
+        if "error" in form_result:
+            return form_result
+        
+        # Extract fields from the form
+        form_data = form_result.get("form", {})
+        fields_list = form_data.get("fields", [])
+        
+        # Create mapping from label to name
+        field_label_to_name_map = {}
+        custom_fields = []
+        
+        for field in fields_list:
+            field_name = field.get("name", "")
+            field_label = field.get("label", "")
+            field_default = field.get("default", False)
+            
+            if field_label and field_name:
+                field_label_to_name_map[field_label.lower()] = field_name
+                
+                # If it's not a default field, add to custom_fields
+                if not field_default:
+                    custom_fields.append({
+                        "name": field_name,
+                        "label": field_label,
+                        "type": field.get("type", ""),
+                        "required": field.get("required", False),
+                        "field_options": field.get("field_options", {}),
+                        "choices": field.get("choices", [])
+                    })
+        
+        return {
+            "field_label_to_name_map": field_label_to_name_map,
+            "custom_fields": custom_fields,
+            "issue_type_used": issue_type_name,
+            "total_fields": len(fields_list)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting project fields mapping: {str(e)}")
+        return {"error": f"Failed to get project fields mapping: {str(e)}"}
+
+
 @mcp.tool()
 @performance_monitor("fr_filter_tasks")
 async def fr_filter_tasks(
@@ -983,10 +1126,12 @@ async def fr_filter_tasks(
     effort_value: Optional[Union[int, str]] = None,
     duration_value: Optional[Union[int, str]] = None
 ) -> Any:
-    """Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection.
+    """Filter tasks/issues using field labels with automatic name-to-ID resolution and custom field detection.
 
     This function supports both individual field parameters and query-based filtering with comprehensive
-    name-to-ID resolution for all field types including custom fields.
+    label-to-name mapping and name-to-ID resolution for all field types including custom fields.
+    
+    Field labels are used instead of field names for better user experience.
 
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
@@ -1027,12 +1172,12 @@ async def fr_filter_tasks(
         # Using issue keys for parent/epic
         fr_filter_tasks(parent_id="PROJ-123", epic_id="PROJ-456")
         
-        # Using query format with names and custom fields
-        fr_filter_tasks(query="owner_id:kalidass,theme:ITPM")
-        fr_filter_tasks(query="owner_id:John Doe,status_id:In Progress,cf_theme:ITPM")
+        # Using query format with field labels and custom fields
+        fr_filter_tasks(query="Owner:John Doe,Status:In Progress,Theme:ITPM")
+        fr_filter_tasks(query="Title:bug fix,Issue Type:Bug")
         
-        # JSON format with custom fields
-        fr_filter_tasks(query='{"owner_id":"John Doe","status_id":"In Progress","theme":"ITPM"}', query_format="json")
+        # JSON format with field labels
+        fr_filter_tasks(query='{"Owner":"John Doe","Status":"In Progress","Theme":"ITPM"}', query_format="json")
         
         # Mixed ID and name filtering
         fr_filter_tasks(owner_id=123, status_id="In Progress", sprint_id="Sprint 1")
@@ -1041,10 +1186,12 @@ async def fr_filter_tasks(
         fr_filter_tasks()
         
     Note:
+        - Field labels are automatically mapped to field names (e.g., "Title" -> "title", "Issue Type" -> "issue_type")
         - All field names support both human-readable names and IDs
-        - Custom fields are automatically detected and prefixed with 'cf_'
+        - Custom fields are automatically detected and handled
         - Name-to-ID resolution works for: owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id
         - Custom field values are also resolved to IDs when possible
+        - You can use either field labels (user-friendly) or field names (API names) in queries
     """
     try:
         # Validate environment variables
@@ -1081,8 +1228,14 @@ async def fr_filter_tasks(
         # Handle query parameter if provided
         if query:
             async with httpx.AsyncClient() as client:
-                # Get custom fields for the project to process query properly
-                custom_fields = await get_project_custom_fields(client, base_url, project_id, headers)
+                # Get form fields (standard and custom) for the project to process query properly
+                # Use a default issue type to get general form fields
+                fields_info = await _get_project_fields_mapping(project_id, project_identifier)
+                if "error" in fields_info:
+                    return fields_info
+                
+                field_label_to_name_map = fields_info["field_label_to_name_map"]
+                custom_fields = fields_info["custom_fields"]
                 
                 # Parse query based on format
                 if query_format == "json":
@@ -1097,9 +1250,9 @@ async def fr_filter_tasks(
                     processed_query_str = process_query_with_custom_fields(query, custom_fields)
                     query_pairs = parse_query_string(processed_query_str)
                 
-                # Resolve all field names and values to IDs
+                # Resolve all field labels to names, then names and values to IDs
                 resolved_query = await _resolve_query_fields(
-                    query_pairs, project_id, client, base_url, headers, custom_fields
+                    query_pairs, project_id, client, base_url, headers, custom_fields, field_label_to_name_map
                 )
                 
                 # Make API request with resolved parameters
@@ -1111,15 +1264,20 @@ async def fr_filter_tasks(
         resolved_params = {}
         if field_params:
             async with httpx.AsyncClient() as client:
-                # Get custom fields for individual parameter processing
-                custom_fields = await get_project_custom_fields(client, base_url, project_id, headers)
+                # Get form fields (standard and custom) for individual parameter processing
+                fields_info = await _get_project_fields_mapping(project_id, project_identifier)
+                if "error" in fields_info:
+                    return fields_info
+                
+                field_label_to_name_map = fields_info["field_label_to_name_map"]
+                custom_fields = fields_info["custom_fields"]
                 
                 # Convert field_params to query_pairs format for consistent processing
                 query_pairs = list(field_params.items())
                 
                 # Use the same resolution logic as query processing
                 resolved_params = await _resolve_query_fields(
-                    query_pairs, project_id, client, base_url, headers, custom_fields
+                    query_pairs, project_id, client, base_url, headers, custom_fields, field_label_to_name_map
                 )
 
         # Make the API request with individual parameters 
@@ -1324,16 +1482,92 @@ async def fr_save_filter(
         return create_error_response(f"Failed to save filter: {str(e)}")
 
 
+async def _get_testcase_fields_mapping(
+    project_identifier: Optional[Union[int, str]] = None
+) -> Dict[str, Any]:
+    """Get testcase field label to condition name mapping and custom fields.
+    
+    Returns:
+        Dictionary with field_label_to_condition_map, custom_fields, and metadata
+    """
+    try:
+        # Get testcase form fields
+        form_result = await fr_get_testcase_form_fields(project_identifier)
+        if "error" in form_result:
+            return form_result
+        
+        # Extract fields from the form
+        form_data = form_result.get("form", {})
+        fields = form_data.get("fields", [])
+        
+        # Create label to condition name mapping for testcases
+        field_label_to_condition_map = {}
+        custom_fields = []
+        
+        for field in fields:
+            field_name = field.get("name", "")
+            field_label = field.get("label", "")
+            is_default = field.get("default", False)
+            field_type = field.get("type", "")
+            
+            if field_label and field_name:
+                # Map specific fields to their filter condition names
+                if field_name == "severity":
+                    condition_name = "severity_id"
+                elif field_name == "section":
+                    condition_name = "section_id"
+                elif field_name == "test_case_type":
+                    condition_name = "type_id"
+                elif field_name == "issues":
+                    condition_name = "issue_ids"
+                else:
+                    # For other fields, use the field name as condition name
+                    condition_name = field_name
+                
+                field_label_to_condition_map[field_label] = condition_name
+                
+                # Identify custom fields (non-default fields)
+                if not is_default:
+                    custom_fields.append({
+                        "name": field_name,
+                        "label": field_label,
+                        "type": field_type,
+                        "condition": condition_name
+                    })
+        
+        return {
+            "field_label_to_condition_map": field_label_to_condition_map,
+            "custom_fields": custom_fields,
+            "form_data": form_data,
+            "total_fields": len(fields)
+        }
+        
+    except Exception as e:
+        return {"error": f"Failed to get testcase fields mapping: {str(e)}"}
+
+
 @mcp.tool()
 @performance_monitor("fr_filter_testcases")
 async def fr_filter_testcases(
     project_identifier: Optional[Union[int, str]] = None,
     filter_rules: Optional[List[Dict[str, Any]]] = None
 ) -> Any:
-    """Filter test cases using filter rules with automatic name-to-ID resolution.
+    """Filter test cases using filter rules with automatic label-to-condition and name-to-ID resolution.
     
-    This tool allows you to filter test cases by various criteria like section, severity, type, and linked issues.
-    It automatically resolves names to IDs for:
+    This tool allows you to filter test cases by various criteria using either user-friendly field labels 
+    or internal condition names. It supports both approaches for maximum flexibility:
+    
+    Field Label Support (NEW):
+    - "Title": Maps to title condition
+    - "Pre-requisite": Maps to pre_requisite condition  
+    - "Steps to Execute": Maps to steps condition
+    - "Expected Results": Maps to expected_results condition
+    - "Severity": Maps to severity_id condition
+    - "Section": Maps to section_id condition
+    - "Type": Maps to type_id condition
+    - "Linked Tasks": Maps to issue_ids condition
+    
+    Automatic Name-to-ID Resolution:
     - section_id: Resolves section names to IDs
     - type_id: Resolves test case type names to IDs
     - issue_ids: Resolves issue keys to IDs
@@ -1345,33 +1579,39 @@ async def fr_filter_testcases(
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         filter_rules: List of filter rule objects with condition, operator, and value
-                     Example: [{"condition": "section_id", "operator": "is", "value": "My Section"}]
+                     Example: [{"condition": "Section", "operator": "is", "value": "Authentication"}]
     
     Returns:
         Filtered list of test cases or error response
         
-    Example:
-        # Filter by section name (automatically resolved to ID)
-        test_cases = fr_filter_testcases(
-            filter_rules=[{"condition": "section_id", "operator": "is", "value": "Authentication"}]
-        )
-        
-        # Filter by test case type name and severity
+    Examples:
+        # NEW: Filter using user-friendly field labels
         test_cases = fr_filter_testcases(
             filter_rules=[
-                {"condition": "type_id", "operator": "is", "value": "Functional Test"},
-                {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]}
+                {"condition": "Section", "operator": "is", "value": "Authentication"},
+                {"condition": "Type", "operator": "is", "value": "Functional Test"},
+                {"condition": "Severity", "operator": "is_in", "value": ["High", "Medium"]},
+                {"condition": "Linked Tasks", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}
             ]
         )
         
-        # Filter by linked issue keys (automatically resolved to IDs)
+        # LEGACY: Filter using internal condition names (still supported for backward compatibility)
         test_cases = fr_filter_testcases(
-            filter_rules=[{"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}]
+            filter_rules=[
+                {"condition": "section_id", "operator": "is", "value": "Authentication"},
+                {"condition": "type_id", "operator": "is", "value": "Functional Test"},
+                {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]},
+                {"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}
+            ]
         )
         
-        # Filter by tag names (automatically resolved to IDs)
+        # Mixed approach: Use both labels and condition names
         test_cases = fr_filter_testcases(
-            filter_rules=[{"condition": "tags", "operator": "is_in", "value": ["smoke", "regression"]}]
+            filter_rules=[
+                {"condition": "Title", "operator": "contains", "value": "Login"},
+                {"condition": "type_id", "operator": "is", "value": "Smoke Test"},
+                {"condition": "tags", "operator": "is_in", "value": ["regression"]}
+            ]
         )
     """
     try:
@@ -1381,6 +1621,23 @@ async def fr_filter_testcases(
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         client = get_http_client()
+
+        # Get testcase field mappings for label-to-condition translation
+        field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
+        if "error" in field_mapping_result:
+            return field_mapping_result
+            
+        field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
+        custom_fields = field_mapping_result.get("custom_fields", [])
+
+        # Apply label-to-condition mapping to filter rules
+        if filter_rules:
+            for rule in filter_rules:
+                if isinstance(rule, dict) and "condition" in rule:
+                    condition = rule["condition"]
+                    # Check if condition is a label that needs to be mapped to condition name
+                    if condition in field_label_to_condition_map:
+                        rule["condition"] = field_label_to_condition_map[condition]
 
         # Process and resolve filter rules with optimized batch resolution
         resolved_rules = []
@@ -1610,7 +1867,7 @@ async def fr_get_testcase_form_fields(
         client = get_http_client()
 
         # Get test case form fields
-        url = f"{base_url}/{project_id}/test_cases/form"
+        url = f"{base_url}/{project_id}/forms/project_test_case_form"
         return await make_api_request("GET", url, headers, client=client)
 
     except Exception as e:
@@ -1720,6 +1977,75 @@ async def fr_clear_all_caches() -> Any:
         return {"message": "All caches cleared successfully"}
     except Exception as e:
         return create_error_response(f"Failed to clear caches: {str(e)}")
+
+
+@mcp.tool()
+async def fr_get_testrun_details(
+    test_run_id: Union[int, str],
+    project_identifier: Optional[Union[int, str]] = None
+) -> Dict[str, Any]:
+    """Get test run details with simple execution insights.
+    
+    Args:
+        test_run_id: Test run ID (required)
+        project_identifier: Project ID or key (optional)
+        
+    Returns:
+        Test run details with execution summary
+    """
+    try:
+        env_data = validate_environment()
+        if "error" in env_data:
+            return env_data
+            
+        if not test_run_id:
+            return create_error_response("test_run_id is required")
+            
+        project_id = get_project_identifier(project_identifier)
+        url = f"{env_data['base_url']}/{project_id}/test_runs/{test_run_id}"
+        
+        response = await make_api_request("GET", url, env_data["headers"], client=get_http_client())
+        if "error" in response:
+            return response
+            
+        test_run = response.get("test_run", {})
+        if not test_run:
+            return create_error_response("Test run not found")
+            
+        progress = test_run.get("progress", {})
+        creator = next((u.get("name", "Unknown") for u in response.get("users", []) if u.get("id") == test_run.get("creator_id")), "Unknown")
+        
+        # Simple metrics
+        total = sum(progress.values())
+        passed = progress.get("passed", 0)
+        failed = progress.get("failed", 0)
+        
+        # Build simple response
+        result = {
+            "id": test_run.get("id"),
+            "name": test_run.get("name"),
+            "status": test_run.get("status"),
+            "creator": creator,
+            "total_tests": total,
+            "passed": passed,
+            "failed": failed,
+            "progress": progress
+        }
+        
+        # Simple insights
+        if total == 0:
+            result["insight"] = "No test cases in this run"
+        elif failed > 0:
+            result["insight"] = f"{failed} test cases failed out of {total}"
+        elif passed == total:
+            result["insight"] = f"All {total} test cases passed successfully"
+        else:
+            result["insight"] = f"{passed}/{total} test cases completed"
+            
+        return result
+        
+    except Exception as e:
+        return create_error_response(f"Failed to get test run details: {str(e)}")
 
 
 async def fr_get_performance_stats() -> Dict[str, Any]:
@@ -1853,11 +2179,14 @@ async def _find_item_by_name(
     
     if isinstance(data, list):
         target = item_name.strip().lower()
+        # For issue_types, use 'label' field instead of 'name' field
+        field_name = "label" if data_type == "issue_types" else "name"
+        
         for item in data:
-            name = str(item.get("name", "")).strip().lower()
-            if name == target:
+            field_value = str(item.get(field_name, "")).strip().lower()
+            if field_value == target:
                 return item
-        available_names = [str(item.get("name", "")) for item in data if item.get("name")]
+        available_names = [str(item.get(field_name, "")) for item in data if item.get(field_name)]
         raise ValueError(f"{data_type.title().replace('_', ' ')} '{item_name}' not found. Available {data_type}: {', '.join(available_names)}")
     
     raise ValueError(f"Unexpected response structure for {data_type}")
@@ -2004,16 +2333,36 @@ async def _resolve_query_fields(
     client: httpx.AsyncClient,
     base_url: str,
     headers: Dict[str, str],
-    custom_fields: List[Dict[str, Any]]
+    custom_fields: List[Dict[str, Any]],
+    field_label_to_name_map: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
-    """Resolve all query field names and values to their proper IDs.
+    """Resolve query field labels to names, then names and values to their proper IDs.
     
     Handles:
+    - Field label to name mapping (e.g., "Title" -> "title", "Issue Type" -> "issue_type")
     - Standard fields (owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id)
     - Custom fields (with cf_ prefix)
     - Name-to-ID resolution for all supported field types
     """
     resolved_query = {}
+    
+    # Convert field labels to field names if mapping is provided
+    mapped_query_pairs = []
+    if field_label_to_name_map:
+        for field_name, value in query_pairs:
+            # Check if field_name is actually a label that needs mapping
+            field_name_lower = field_name.lower()
+            if field_name_lower in field_label_to_name_map:
+                # Map label to actual field name
+                actual_field_name = field_label_to_name_map[field_name_lower]
+                mapped_query_pairs.append((actual_field_name, value))
+                logging.info(f"Mapped field label '{field_name}' to field name '{actual_field_name}'")
+            else:
+                # Use field name as-is (might already be a field name)
+                mapped_query_pairs.append((field_name, value))
+    else:
+        # No mapping provided, use query pairs as-is
+        mapped_query_pairs = query_pairs
     
     # Field resolution mapping
     field_resolvers = {
@@ -2025,7 +2374,7 @@ async def _resolve_query_fields(
         "sub_project_id": lambda value: _resolve_subproject_name_to_id(value, project_id),
     }
     
-    for field_name, value in query_pairs:
+    for field_name, value in mapped_query_pairs:
         try:
             # Handle custom fields
             if field_name.startswith("cf_") or is_custom_field(field_name, custom_fields):

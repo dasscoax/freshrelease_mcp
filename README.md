@@ -3,218 +3,97 @@
 [![PyPI version](https://badge.fury.io/py/freshrelease-mcp.svg)](https://badge.fury.io/py/freshrelease-mcp)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-An MCP server implementation that integrates with Freshrelease, enabling AI models to interact with Freshrelease projects and tasks through 22 powerful MCP tools.
+An MCP server that enables AI models to interact with Freshrelease through powerful tools for complete project and test management.
 
-## Quick Reference
+## 🚀 Key Features
 
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **Project Management** | 2 | Create and retrieve projects |
-| **Task Management** | 4 | Create, retrieve, and manage tasks/issues |
-| **User Management** | 1 | Search and resolve users |
-| **Form Fields Management** | 3 | Get form fields for issues and test cases |
-| **Test Case Management** | 6 | List, filter, and manage test cases |
-| **Filtering & Search** | 4 | Advanced filtering for tasks and test cases |
-| **Lookup Functions** | 4 | Resolve names to IDs for various entities |
-| **Total** | **24** | **Complete Freshrelease integration** |
+- **🤖 AI-Native**: Built specifically for AI model integration via MCP protocol
+- **🔧 Complete Management**: Projects, tasks, test cases, test runs, and user management  
+- **🧠 Smart Resolution**: Automatically converts names to IDs (users, sprints, projects, etc.)
+- **📋 Advanced Filtering**: Support for both user-friendly labels and technical field names
+- **⚡ Performance Optimized**: Built-in caching, connection pooling, and batch processing
+- **🎯 Label-Based Filtering**: Use intuitive field names like "Owner" instead of "owner_id"
 
-## Features
+## 📊 Tools Overview
 
-- **Freshrelease Integration**: Seamless interaction with Freshrelease API endpoints
-- **AI Model Support**: Enables AI models to perform project/task operations through Freshrelease
-- **Automated Project Management**: Handle project and task creation and retrieval
-- **Smart Name Resolution**: Automatic conversion of human-readable names to IDs
-- **Custom Field Detection**: Automatic detection and prefixing of custom fields
-- **Advanced Filtering**: Powerful task filtering with multiple query formats
+| **Category** | **Key Features** |
+|-------------|------------------|
+| **Core Management** | Projects, tasks, users, and issue types |
+| **Test Management** | Test cases, test runs, and execution tracking |  
+| **Smart Filtering** | Advanced task and test case filtering |
+| **Lookup & Utilities** | Name-to-ID resolution and cache management |
 
+## 🛠️ Available Tools
 
-## Components
+### **Core Management**
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `fr_get_project` | Get project details | `project_identifier` |
+| `fr_create_task` | Create new tasks/issues | `title`, `project_identifier`, `issue_type_name`, `user` |  
+| `fr_get_task` | Get task by ID/key | `project_identifier`, `key` |
+| `fr_get_all_tasks` | List all project tasks | `project_identifier` |
+| `fr_get_issue_type_by_name` | Resolve issue type names | `issue_type_name` |
+| `get_task_default_and_custom_fields` | Get form fields for issue types | `issue_type_name` |
+| `fr_search_users` | Find users by name/email | `search_text` |
 
-### MCP Tools (24 Available)
+### **Test Management**
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `fr_list_testcases` | List all test cases | `project_identifier` |
+| `fr_get_testcase` | Get specific test case | `test_case_key` |
+| `fr_get_testcases_by_section` | Get tests by section | `section_name` |
+| `fr_link_testcase_issues` | Link tests to issues | `testcase_keys`, `issue_keys` |
+| `fr_filter_testcases` | Advanced test filtering | `filter_rules` |
+| `fr_add_testcases_to_testrun` | Add tests to run | `test_run_id`, `test_case_keys` |
+| `fr_get_testrun_details` | Get test run insights | `test_run_id` |
 
-The server offers 22 MCP tools for Freshrelease operations, organized by functionality:
+### **Smart Filtering**  
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `fr_filter_tasks` | Advanced task filtering | `query`, field labels/names |
+| `fr_save_filter` | Save reusable filters | `label`, `query_hash` |
+| `fr_get_issue_form_fields` | Get issue form schema | `issue_type_id` |
+| `fr_get_testcase_form_fields` | Get test form schema | - |
+| `fr_get_all_issue_type_form_fields` | Get all form schemas | - |
 
-#### **Project Management (2 tools)**
-- `fr_create_project`: Create a project
-  - Inputs: `name` (string, required), `description` (string, optional)
-
-- `fr_get_project`: Get a project by ID or key
-  - Inputs: `project_identifier` (number|string, required)
-
-#### **Task Management (4 tools)**
-- `fr_create_task`: Create a task under a project
-  - Inputs: `project_identifier` (number|string, required), `title` (string, required), `description` (string, optional), `assignee_id` (number, optional), `status` (string|enum, optional), `due_date` (YYYY-MM-DD, optional), `issue_type_name` (string, optional, defaults to "task"), `user` (string email or name, optional), `additional_fields` (object, optional)
-  - Notes: `user` resolves to `assignee_id` via users search if `assignee_id` not provided. `issue_type_name` resolves to `issue_type_id`. `additional_fields` allows passing arbitrary extra fields supported by your Freshrelease account. Core fields (`title`, `description`, `assignee_id`, `status`, `due_date`, `issue_type_id`) cannot be overridden.
-
-- `fr_get_task`: Get a task by key or ID within a project
-  - Inputs: `project_identifier` (number|string, required), `key` (number|string, required)
-
-- `fr_get_all_tasks`: List issues for a project
-  - Inputs: `project_identifier` (number|string, required)
-
-- `fr_get_issue_type_by_name`: Resolve an issue type object by name
-  - Inputs: `project_identifier` (number|string, required), `issue_type_name` (string, required)
-
-#### **User Management (1 tool)**
-- `fr_search_users`: Search users by name or email within a project
-  - Inputs: `project_identifier` (number|string, required), `search_text` (string, required)
-
-#### **Form Fields Management (3 tools)**
-- `fr_get_issue_form_fields`: Get form fields for issue creation and filtering
-  - Inputs: `project_identifier` (number|string, optional), `issue_type_id` (number|string, optional)
-  - Notes: Shows both standard and custom fields. Use `issue_type_id` to get fields specific to an issue type.
-
-- `fr_get_all_issue_type_form_fields`: Get form fields for all issue types in a project
-  - Inputs: `project_identifier` (number|string, optional)
-  - Notes: Returns form fields for each issue type (Bug, Task, Epic, etc.) to see field differences.
-
-- `fr_get_testcase_form_fields`: Get form fields for test case filtering
-  - Inputs: `project_identifier` (number|string, optional)
-  - Notes: Shows available fields for test case filter rules.
-
-#### **Test Case Management (6 tools)**
-- `fr_list_testcases`: List all test cases in a project
-  - Inputs: `project_identifier` (number|string, optional)
-  - Notes: Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
-
-- `fr_get_testcase`: Get a specific test case by key or ID
-  - Inputs: `project_identifier` (number|string, optional), `test_case_key` (string|number, required)
-  - Notes: Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
-
-- `fr_get_testcases_by_section`: Get test cases within a section and its sub-sections
-  - Inputs: `project_identifier` (number|string, optional), `section_name` (string, required)
-  - Notes: Supports hierarchical section names like "Authentication > Login". Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
-
-- `fr_link_testcase_issues`: Bulk link issues to one or more testcases (using keys)
-  - Inputs: `project_identifier` (number|string, required), `testcase_keys` (array of string|number), `issue_keys` (array of string|number)
-
-- `fr_add_testcases_to_testrun`: Add test cases to a test run
-  - Inputs: `project_identifier` (number|string, optional), `test_run_id` (number|string, required), `test_case_keys` (array of string|number, optional), `section_hierarchy_paths` (array of string, optional), `filter_rule` (array of object, optional)
-  - Notes: Adds test cases to a test run. Can specify test case keys, section hierarchy paths, or filter rules. Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
-
-#### **Filtering & Search (2 tools)**
-- `fr_filter_tasks`: Filter tasks/issues using various criteria with automatic name-to-ID resolution and custom field detection
-  - Inputs: `project_identifier` (number|string, optional), `query` (string|object, optional), `query_format` (string, optional), plus 19 standard field parameters
-  - Standard Fields: `title`, `description`, `status_id` (ID or name), `priority_id`, `owner_id` (ID, name, or email), `issue_type_id` (ID or name), `project_id` (ID or key), `story_points`, `sprint_id` (ID or name), `start_date`, `due_by`, `release_id` (ID or name), `tags`, `document_ids`, `parent_id` (ID or issue key), `epic_id` (ID or issue key), `sub_project_id` (ID or name), `effort_value`, `duration_value`
-  - Notes: Supports individual field parameters or query format. Automatically resolves names to IDs for all supported fields. Automatically detects and prefixes custom fields with "cf_". Uses FRESHRELEASE_PROJECT_KEY if project_identifier not provided.
-
-- `fr_save_filter`: Save a filter using query_hash from a previous fr_filter_tasks call
-  - Inputs: `label` (string, required), `query_hash` (array, required), `project_identifier` (number|string, optional), `private_filter` (boolean, optional, default: true), `quick_filter` (boolean, optional, default: false)
-  - Notes: Creates and saves custom filters that can be reused. Use fr_filter_tasks first to get the query_hash, then save it with this function. Perfect for creating reusable filter presets.
-
-- `fr_filter_testcases`: Filter test cases using filter rules with automatic name-to-ID resolution
-  - Inputs: `project_identifier` (number|string, optional), `filter_rules` (array of objects, optional)
-  - Notes: Filter test cases by section, severity, type, linked issues, tags, etc. Automatically resolves names to IDs for section_id, type_id, issue_ids, tags, and custom fields. Use fr_get_testcase_form_fields to get available fields and values.
-
-- `fr_get_testcase_form_fields`: Get available fields for test case filtering
-  - Inputs: `project_identifier` (number|string, optional)
-  - Notes: Returns form fields that can be used in test case filter rules. Use this to understand available filter conditions and their possible values.
-
-#### **Lookup Functions (4 tools)**
-- `fr_get_sprint_by_name`: Get sprint ID by name
-  - Inputs: `project_identifier` (number|string, optional), `sprint_name` (string, required)
-
-- `fr_get_release_by_name`: Get release ID by name
-  - Inputs: `project_identifier` (number|string, optional), `release_name` (string, required)
-
-- `fr_get_tag_by_name`: Get tag ID by name
-  - Inputs: `project_identifier` (number|string, optional), `tag_name` (string, required)
-
-- `fr_get_current_subproject_sprint`: Get the current active sprint for a sub-project by name
-  - Inputs: `sub_project_name` (string, required)
-  - Notes: Uses FRESHRELEASE_PROJECT_KEY environment variable. Resolves sub-project name to ID, then fetches active sprints. Returns the current sprint with sub-project info and all active sprints.
+### **Lookup & Utilities**
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `fr_get_sprint_by_name` | Find sprint by name | `sprint_name` |
+| `fr_get_release_by_name` | Find release by name | `release_name` |
+| `fr_get_tag_by_name` | Find tag by name | `tag_name` |
+| `fr_get_current_subproject_sprint` | Get active sub-project sprint | `sub_project_name` |
+| `get_subproject_id_by_name` | Resolve sub-project names | `sub_project_name` |
+| `fr_clear_filter_cache` | Clear filter cache | - |
+| `fr_clear_all_caches` | Clear all caches | - |
 
 
+## ✨ Smart Features
 
-## Advanced Features
+- **🧠 Name-to-ID Resolution**: Converts user names, sprint names, issue types, etc. to IDs automatically
+- **📋 Label-Based Filtering**: Use "Owner" instead of "owner_id", "Status" instead of "status_id"  
+- **⚡ Performance Optimized**: Multi-level caching, connection pooling, batch processing
+- **🔗 Flexible Project IDs**: Accept both project keys (`"FS"`) and numeric IDs (`123`)
+- **🎯 Custom Field Support**: Auto-detects and handles custom fields with "cf_" prefixing
+- **📊 Multiple Query Formats**: Comma-separated strings or JSON objects
 
-### Internal Performance & Caching
-The server includes advanced performance monitoring and caching systems that operate internally:
-- **Performance Monitoring**: All MCP tools are automatically monitored for execution times and call counts
-- **Multi-level Caching**: Custom fields, lookup data, and resolved IDs are cached for optimal performance
-- **Connection Pooling**: Global HTTP client with connection reuse for efficient API calls
-- **Batch Processing**: Parallel resolution of multiple names to IDs for improved performance
+## 🚀 Quick Start
 
-### Internal Utility Functions
-The server includes utility functions for code reuse across MCP tools:
-- **`get_subproject_id_by_name()`**: Resolves sub-project names to IDs using default project from environment
-- **`_resolve_subproject_name_to_id()`**: Integration wrapper for task filtering system
-- Used internally by sprint functions, task filtering, and other sub-project related functions for consistent name resolution
-
-*Note: Performance, cache management, and utility functions are available internally but not exposed as MCP tools to keep the interface clean and focused on core Freshrelease functionality.*
-
-### Smart Name Resolution
-The server automatically converts human-readable names to Freshrelease IDs:
-- **User Names/Emails** → User IDs
-- **Issue Type Names** → Issue Type IDs  
-- **Status Names** → Status IDs
-- **Sprint Names** → Sprint IDs
-- **Release Names** → Release IDs
-- **Sub-Project Names** → Sub-Project IDs
-- **Project Keys** → Project IDs (when needed)
-- **Issue Keys** → Issue IDs
-
-### Project Identifier Flexibility
-All functions accept both **project keys** and **project IDs**:
-- **Project Keys**: String identifiers like `"FS"`, `"PROJ"`, `"DEV"`
-- **Project IDs**: Numeric identifiers like `123`, `456`, `789`
-- **Auto-fallback**: Uses `FRESHRELEASE_PROJECT_KEY` environment variable if not specified
-
-### Custom Field Detection
-- **Automatic Detection**: Fetches custom fields from Freshrelease form API
-- **Smart Prefixing**: Automatically adds "cf_" prefix to custom fields
-- **Caching**: Custom fields are cached for performance
-- **Standard Fields**: Recognizes 19 standard Freshrelease fields
-
-### Advanced Filtering
-- **Multiple Query Formats**: Comma-separated or JSON format
-- **Individual Parameters**: Use specific field parameters
-- **Combined Queries**: Mix individual parameters with query strings
-- **Name Resolution**: All field names automatically resolved to IDs
-
-## Getting Started
-
-### Installation Options
-
-#### Option 1: For End Users (No Python Installation Required)
+### 1. Install
 ```bash
-# Install uv (one-time setup)
-curl -LsSf https://astral.sh/uv/install.sh | sh  # macOS/Linux
-# OR
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
-
-# The MCP will be installed automatically via uvx when needed
+# Easy install (no Python needed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Or with Python: uv tool install freshrelease-mcp
 ```
 
-#### Option 2: For Users with Python + uv Installed  
-```bash
-# Install as uv tool (recommended - faster startup)
-uv tool install freshrelease-mcp
+### 2. Get Credentials
+- **API Key**: Freshrelease → Profile → API Key
+- **Domain**: `company.freshrelease.com` (your domain)
+- **Project Key**: e.g., `"FS"`, `"PROJ"` (optional)
 
-# OR install with pip
-pip install freshrelease-mcp
-```
+### 3. Configure Cursor
+Add to `~/.cursor/mcp.json`:
 
-#### Option 3: For Local installation
-```bash
-# Clone and install in development mode
-git clone <repository-url>
-cd freshrelease-mcp
-uv tool install . --force
-```
-
-## Cursor IDE Setup
-
-### Quick Setup (3 minutes)
-
-1. **Get your Freshrelease credentials:**
-   - **API Key**: Go to Freshrelease → Profile → API Key
-   - **Domain**: Your Freshrelease URL (e.g., `company.freshrelease.com`)  
-   - **Project Key**: Your project identifier (e.g., `PROJ`, `FS`)
-
-2. **Configure Cursor** by adding to `~/.cursor/mcp.json`:
-
-#### Configuration A: No Python Required (uvx method)
 ```json
 {
   "mcpServers": {
@@ -222,262 +101,75 @@ uv tool install . --force
       "command": "uvx",
       "args": ["freshrelease-mcp"],
       "env": {
-        "FRESHRELEASE_API_KEY": "your_api_key_here",
-        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com",
-        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
+        "FRESHRELEASE_API_KEY": "your_api_key",
+        "FRESHRELEASE_DOMAIN": "company.freshrelease.com",
+        "FRESHRELEASE_PROJECT_KEY": "FS"
       }
     }
   }
 }
 ```
 
-#### Configuration B: With Python/uv Installed (faster startup)
-```json
-{
-  "mcpServers": {
-    "freshrelease-mcp": {
-      "command": "uv",
-      "args": ["tool", "run", "freshrelease-mcp"],
-      "env": {
-        "FRESHRELEASE_API_KEY": "your_api_key_here",
-        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com", 
-        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
-      }
-    }
-  }
-}
-```
+### 4. Restart Cursor
+✅ You'll see Freshrelease tools available!
 
-#### Configuration C: Local Development
-```json
-{
-  "mcpServers": {
-    "freshrelease-mcp": {
-      "command": "uv",
-      "args": ["tool", "run", "freshrelease-mcp"],
-      "env": {
-        "FRESHRELEASE_API_KEY": "your_api_key_here",
-        "FRESHRELEASE_DOMAIN": "your_domain.freshrelease.com",
-        "FRESHRELEASE_PROJECT_KEY": "your_project_key"
-      },
-      "cwd": "/path/to/freshrelease_mcp"
-    }
-  }
-}
-```
+## 💡 Usage Examples
 
-3. **Restart Cursor** completely
+### 🎯 Create & Manage Tasks
+**Ask AI to create a bug report:**
+> "Create a bug ticket titled 'Fix login issue' in the FS project, assign it to john@example.com, and set the status to In Progress"
 
-4. **Verify Setup**: You should see 22+ Freshrelease MCP tools available in Cursor:
-   - `fr_create_task`, `fr_get_all_tasks`, `fr_filter_tasks`
-   - `fr_get_testcase`, `fr_filter_testcases`, `fr_link_testcase_issues`
-   - And many more!
+The AI will automatically:
+- Find your FS project
+- Convert "john@example.com" to the correct user ID
+- Set the issue type as "Bug"
+- Resolve "In Progress" to the proper status ID
 
-### Performance Comparison
+**Get project overview:**
+> "Show me all tasks in the FS project"
 
-| Method | Startup Time | Requires Python | Offline Support | Best For |
-|--------|-------------|----------------|-----------------|----------|
-| **uvx** | ~3-5 seconds | ❌ No | ❌ No | End users, clean systems |
-| **uv tool** | **~1 second** | ✅ Yes | ✅ Yes | **Developers, fastest option** |
-| **Virtual env** | ~0.5 seconds | ✅ Yes | ✅ Yes | Advanced users |
+### 📋 Advanced Task Filtering  
+**Use natural language filtering:**
+> "Find all high priority tasks owned by John Doe that are currently in progress"
 
-### Troubleshooting
+The AI understands both:
+- **Friendly labels**: "Owner", "Status", "Priority" 
+- **Technical names**: "owner_id", "status_id", "priority_id"
 
-#### Not seeing tools in Cursor?
-1. Check `~/.cursor/mcp.json` syntax is valid JSON
-2. Verify your environment variables are correct
-3. Restart Cursor completely 
-4. Check Cursor's developer console for errors
+**Sprint-based filtering:**
+> "Show me all bugs in Sprint 1"
 
-#### Test MCP directly:
+### 🧪 Test Case Management
+**Filter test cases naturally:**
+> "Find all high and medium severity functional tests in the Authentication section"
+
+**Get test run insights:**
+> "How is test run 150183 performing?"
+
+**Response example:**
+*"Test run has 8 total tests, all 8 passed successfully. Great job!"*
+
+## 🔧 Troubleshooting
+
+**Not seeing tools in Cursor?**
+1. Check `~/.cursor/mcp.json` is valid JSON
+2. Restart Cursor completely
+3. Verify credentials: `uvx freshrelease-mcp --help`
+
+**Environment Variables:**
 ```bash
-# Test uvx approach
-uvx freshrelease-mcp --help
-
-# Test uv tool approach  
-uv tool run freshrelease-mcp --help
-
-# Clear cache if needed
-uv cache clean
-uvx --reinstall freshrelease-mcp
+FRESHRELEASE_API_KEY="your_api_key"      # Required
+FRESHRELEASE_DOMAIN="company.freshrelease.com"  # Required  
+FRESHRELEASE_PROJECT_KEY="FS"            # Optional default project
 ```
 
-#### Verify credentials:
-- Test your API key works with Freshrelease API
-- Ensure domain format is `company.freshrelease.com` (no https://)
-- Check project key exists in your Freshrelease account
+## 📄 License
 
-### Environment Setup
-```bash
-export FRESHRELEASE_API_KEY="your_api_key_here"
-export FRESHRELEASE_DOMAIN="your_domain.freshrelease.com"
-export FRESHRELEASE_PROJECT_KEY="your_project_key"  # Optional: default project
-```
+MIT License - see LICENSE file for details.
 
-### Basic Usage
-```python
-# Create a project
-fr_create_project(name="My Project", description="Project description")
+---
 
-# Create a task with smart name resolution
-fr_create_task(
-    project_identifier="FS",  # Project key
-    title="Fix bug in login",
-    issue_type_name="Bug",  # Automatically resolved to ID
-    user="john@example.com",  # Automatically resolved to assignee_id
-    status="In Progress"  # Automatically resolved to status ID
-)
-
-# Filter tasks with advanced criteria using project ID
-fr_filter_tasks(
-    project_identifier=123,  # Project ID
-    owner_id="John Doe",  # Name automatically resolved to ID
-    status_id="In Progress",  # Status name resolved to ID
-    sprint_id="Sprint 1"  # Sprint name resolved to ID
-)
-
-# Get current sub-project sprint (uses FRESHRELEASE_PROJECT_KEY)
-fr_get_current_subproject_sprint(
-    sub_project_name="Frontend Development"
-)
-```
-
-
-## Configuration
-
-### Environment Variables
-```bash
-# Required
-FRESHRELEASE_API_KEY="your_api_key_here"
-FRESHRELEASE_DOMAIN="your_domain.freshrelease.com"
-
-# Optional
-FRESHRELEASE_PROJECT_KEY="your_project_key"  # Default project identifier
-```
-
-## Examples
-
-### Create a Project and Task
-```python
-# Create a project
-project = fr_create_project(
-    name="Web Application",
-    description="Main web application project"
-)
-
-# Create a task with smart resolution
-task = fr_create_task(
-    title="Implement user authentication",
-    description="Add login and registration functionality",
-    issue_type_name="Task",
-    user="john@example.com",
-    status="In Progress",
-    due_date="2024-12-31"
-)
-```
-
-### Filter Tasks
-```python
-# Filter by multiple criteria
-tasks = fr_filter_tasks(
-    owner_id="John Doe",
-    status_id="In Progress",
-    issue_type_id="Bug",
-    sprint_id="Sprint 1"
-)
-
-# Using query format
-tasks = fr_filter_tasks(
-    query="owner_id:John Doe,status_id:In Progress,cf_priority:High"
-)
-
-# Filter by sub-project name (automatically resolved to ID)
-tasks = fr_filter_tasks(
-    sub_project_id="Frontend Development",
-    status_id="In Progress"
-)
-```
-
-### Save Filters
-```python
-# First, get a filter result
-result = fr_filter_tasks(
-    owner_id="John Doe",
-    status_id="In Progress",
-    issue_type_id="Bug"
-)
-
-# Then save the filter using the query_hash from the result
-saved_filter = fr_save_filter(
-    label="My Bug Filter",
-    query_hash=result.get("query_hash", []),
-    private_filter=True,
-    quick_filter=True
-)
-
-# Save a filter using query format
-result = fr_filter_tasks(query="priority_id:1,status_id:Open")
-saved_filter = fr_save_filter(
-    label="High Priority Tasks",
-    query_hash=result.get("query_hash", []),
-    private_filter=False
-)
-```
-
-### Test Case Management
-```python
-# Get test cases by section
-test_cases = fr_get_testcases_by_section(
-    section_name="Authentication > Login"
-)
-
-# Add test cases to test run
-fr_add_testcases_to_testrun(
-    test_run_id=123,
-    test_case_keys=["TC-001", "TC-002"],
-    section_hierarchy_paths=["Authentication > Login", "Authentication > Registration"]
-)
-```
-
-### Test Case Filtering
-```python
-# Get available filter fields first
-form_fields = fr_get_testcase_form_fields()
-
-# Filter by section name (automatically resolved to ID)
-test_cases = fr_filter_testcases(
-    filter_rules=[{"condition": "section_id", "operator": "is", "value": "Authentication"}]
-)
-
-# Filter by test case type name and severity (type name automatically resolved)
-test_cases = fr_filter_testcases(
-    filter_rules=[
-        {"condition": "type_id", "operator": "is", "value": "Functional Test"},
-        {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]}
-    ]
-)
-
-# Filter by linked issue keys (automatically resolved to IDs)
-test_cases = fr_filter_testcases(
-    filter_rules=[{"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}]
-)
-
-# Filter by tag names (automatically resolved to IDs)
-test_cases = fr_filter_testcases(
-    filter_rules=[{"condition": "tags", "operator": "is_in", "value": ["smoke", "regression"]}]
-)
-
-# Filter by custom fields (values automatically resolved)
-test_cases = fr_filter_testcases(
-    filter_rules=[{"condition": "cf_priority", "operator": "is", "value": "Critical"}]
-)
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+⭐ **Like this project?** Give it a star on GitHub!  
+🐛 **Found a bug?** [Open an issue](../../issues)  
+💡 **Have ideas?** [Start a discussion](../../discussions)
 
