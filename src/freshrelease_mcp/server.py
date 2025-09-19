@@ -1132,6 +1132,8 @@ async def fr_filter_tasks(
 
     except Exception as e:
         return create_error_response(f"Failed to filter tasks: {str(e)}")
+
+@mcp.tool()
 async def fr_get_sprint_by_name(
     project_identifier: Optional[Union[int, str]] = None,
     sprint_name: str = None
@@ -2078,7 +2080,8 @@ async def _resolve_custom_field_value_optimized(
 
 @mcp.tool()
 async def get_subproject_id_by_name(
-    sub_project_name: str
+    sub_project_name: str,
+    project_identifier: Optional[Union[int, str]] = None
 ) -> Dict[str, Any]:
     """Utility function to get sub-project ID and info by name.
     
@@ -2094,13 +2097,14 @@ async def get_subproject_id_by_name(
     
     Args:
         sub_project_name: Name of the sub-project to find (required)
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         
     Returns:
         Dictionary with sub_project_id, sub_project_info, or error
         Format: {"sub_project_id": int, "sub_project_info": dict} or {"error": str, "available_sub_projects": list}
     """
     try:
-        project_id = get_project_identifier()
+        project_id = get_project_identifier(project_identifier)
         
         if not sub_project_name:
             return {"error": "sub_project_name is required"}
