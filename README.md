@@ -10,7 +10,8 @@ An MCP server that enables AI models to interact with Freshrelease through power
 - **🤖 AI-Native**: Built specifically for AI model integration via MCP protocol
 - **🔧 Complete Management**: Projects, tasks, test cases, test runs, and user management  
 - **🧠 Smart Resolution**: Automatically converts names to IDs (users, sprints, projects, etc.)
-- **📋 Advanced Filtering**: Support for both user-friendly labels and technical field names
+- **📋 Native Filtering**: Full support for Freshrelease's native query_hash format
+- **🌲 Hierarchical Navigation**: Navigate through 7-level deep section hierarchies  
 - **⚡ Performance Optimized**: Built-in caching, connection pooling, and batch processing
 - **🎯 Label-Based Filtering**: Use intuitive field names like "Owner" instead of "owner_id"
 
@@ -50,7 +51,7 @@ An MCP server that enables AI models to interact with Freshrelease through power
 ### **Smart Filtering**  
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `fr_filter_tasks` | Advanced task filtering | `query`, field labels/names |
+| `fr_filter_tasks` | Advanced task filtering with native query_hash | `query_hash`, `filter_id`, `include`, pagination |
 | `fr_save_filter` | Save reusable filters | `label`, `query_hash` |
 | `fr_get_issue_form_fields` | Get issue form schema | `issue_type_id` |
 | `fr_get_testcase_form_fields` | Get test form schema | - |
@@ -71,11 +72,13 @@ An MCP server that enables AI models to interact with Freshrelease through power
 ## ✨ Smart Features
 
 - **🧠 Name-to-ID Resolution**: Converts user names, sprint names, issue types, etc. to IDs automatically
-- **📋 Label-Based Filtering**: Use "Owner" instead of "owner_id", "Status" instead of "status_id"  
-- **⚡ Performance Optimized**: Multi-level caching, connection pooling, batch processing
+- **📋 Native Query Format**: Full support for Freshrelease's `query_hash` format with all operators
+- **🌲 Hierarchical Sections**: Navigate up to 7 levels deep section hierarchies (e.g., `"Level1 > Level2 > Level3"`)
+- **🔄 API Compatibility**: Handles both nested `{"users": [...]}` and direct array response formats
+- **⚡ Performance Optimized**: Multi-level caching, connection pooling, optimized batch processing
 - **🔗 Flexible Project IDs**: Accept both project keys (`"FS"`) and numeric IDs (`123`)
 - **🎯 Custom Field Support**: Auto-detects and handles custom fields with "cf_" prefixing
-- **📊 Multiple Query Formats**: Comma-separated strings or JSON objects
+- **📊 Multiple Query Formats**: Native query_hash, comma-separated strings, or JSON objects
 
 ## 🚀 Quick Start
 
@@ -136,18 +139,39 @@ The AI understands both:
 - **Friendly labels**: "Owner", "Status", "Priority" 
 - **Technical names**: "owner_id", "status_id", "priority_id"
 
-**Sprint-based filtering:**
-> "Show me all bugs in Sprint 1"
+**Native Freshrelease filtering:**
+> "Filter tasks using saved filter ID 102776 with custom fields and date ranges"
+
+**Sprint and date-based filtering:**
+> "Show me all bugs in Sprint 1 created between Dec 2024 and Aug 2025"
 
 ### 🧪 Test Case Management
 **Filter test cases naturally:**
 > "Find all high and medium severity functional tests in the Authentication section"
+
+**Navigate hierarchical sections:**
+> "Get all test cases from Authentication > Login Tests > Positive Cases section"
+
+The AI can navigate up to 7 levels deep in section hierarchies automatically.
 
 **Get test run insights:**
 > "How is test run 150183 performing?"
 
 **Response example:**
 *"Test run has 8 total tests, all 8 passed successfully. Great job!"*
+
+## 🆕 Latest Updates
+
+### **v1.7.6 - Enhanced Filtering & Navigation**
+- ✅ **Native Query Support**: Full `query_hash` format support with all Freshrelease operators
+- ✅ **Optimized Performance**: 42% code reduction with improved section hierarchy navigation  
+- ✅ **Enhanced API Compatibility**: Handles both nested `{"users": [...]}` and direct array responses
+- ✅ **Advanced Pagination**: Support for `filter_id`, `include`, `page`, `per_page`, and sorting
+- ✅ **7-Level Hierarchies**: Navigate deep section structures like `"ESM > Account Clone > Sub-section"`
+
+### **v1.7.5 - Documentation & UX**  
+- ✅ **Human-Readable Examples**: Conversational prompts instead of technical function calls
+- ✅ **Streamlined README**: Removed counts, improved organization and clarity
 
 ## 🔧 Troubleshooting
 

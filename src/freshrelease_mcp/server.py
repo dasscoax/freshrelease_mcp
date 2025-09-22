@@ -200,10 +200,9 @@ def create_error_response(error_msg: str, details: Any = None) -> Dict[str, Any]
 
 # Cache for standard fields to avoid recreating set on every call
 _STANDARD_FIELDS = {
-    "title", "description", "status_id", "priority_id", "owner_id", 
-    "issue_type_id", "project_id", "story_points", "sprint_id", 
-    "start_date", "due_by", "release_id", "tags", "document_ids", 
-    "parent_id", "epic_id", "sub_project_id", "effort_value", "duration_value"
+    "status_id", "priority_id", "owner_id", "issue_type_id", "project_id", 
+    "story_points", "sprint_id", "start_date", "due_by", "release_id", 
+    "tags", "parent_id", "epic_id", "sub_project_id"
 }
 
 # Cache for custom fields to avoid repeated API calls
@@ -729,25 +728,34 @@ async def resolve_user_to_assignee_id(
     response.raise_for_status()
     users_data = response.json()
     
-    if not isinstance(users_data, list) or not users_data:
+    # Handle nested response structure {"users": [...], "meta": {...}}
+    users_list = None
+    if isinstance(users_data, list):
+        users_list = users_data  # Direct array (backward compatibility)
+    elif isinstance(users_data, dict) and "users" in users_data:
+        users_list = users_data["users"]  # Nested structure
+    else:
+        raise ValueError(f"Unexpected response structure for users API")
+    
+    if not users_list:
         raise ValueError(f"No users found matching '{user}'")
     
     lowered = user.strip().lower()
     
     # Prefer exact email match
-    for item in users_data:
+    for item in users_list:
         email = str(item.get("email", "")).strip().lower()
         if email and email == lowered:
             return item.get("id")
     
     # Then exact name match
-    for item in users_data:
+    for item in users_list:
         name_val = str(item.get("name", "")).strip().lower()
         if name_val and name_val == lowered:
             return item.get("id")
     
     # Fallback to first result
-    return users_data[0].get("id")
+    return users_list[0].get("id")
 
 
 async def resolve_issue_type_name_to_id(
@@ -790,63 +798,134 @@ async def resolve_issue_type_name_to_id(
 
 
 async def resolve_section_hierarchy_to_ids(client: httpx.AsyncClient, base_url: str, project_identifier: Union[int, str], headers: Dict[str, str], section_path: str) -> List[int]:
-    """Resolve a section hierarchy path like 'section > sub-section > sub-sub-section' to section IDs.
+    """Resolve a section hierarchy path like 'level1 --> level2 --> level3' to the final section ID.
     
-    Returns list of IDs for all matching sections in the hierarchy.
+    Navigates through section hierarchy level by level using the API:
+    /{Project_identifier}/sections/{level}/sections
+    
+    Supports up to 7 levels of nesting.
+    Returns list containing the ID of the final (deepest) section.
+    
+    Args:
+        client: HTTP client instance
+        base_url: API base URL  
+        project_identifier: Project ID or key
+        headers: Request headers
+        section_path: Hierarchy path like "Authentication --> Login Tests --> Positive Cases"
+        
+    Returns:
+        List containing the ID of the final section, or empty list if not found
+        
+    Raises:
+        ValueError: If section not found in hierarchy or exceeds depth limit
+        httpx.HTTPStatusError: For API errors
     """
-    # Split by '>' and strip whitespace
-    path_parts = [part.strip() for part in section_path.split('>')]
-    if not path_parts or not path_parts[0]:
+    # Parse and validate hierarchy path
+    separator = '-->' if '-->' in section_path else '>'
+    path_parts = [part.strip() for part in section_path.split(separator) if part.strip()]
+    
+    if not path_parts:
         return []
     
-    # Fetch all sections
-    sections_url = f"{base_url}/{project_identifier}/sections"
-    resp = await client.get(sections_url, headers=headers)
-    resp.raise_for_status()
-    sections = resp.json()
+    if len(path_parts) > 7:
+        raise ValueError(f"Section hierarchy exceeds maximum depth of 7 levels. Got {len(path_parts)} levels.")
     
-    if not isinstance(sections, list):
-        raise httpx.HTTPStatusError("Unexpected sections response structure", request=resp.request, response=resp)
+    # Navigate through hierarchy levels
+    current_parent_id = None
     
-    # Build a hierarchy map: parent_id -> children
-    hierarchy: Dict[int, List[Dict[str, Any]]] = {}
-    root_sections: List[Dict[str, Any]] = []
+    for level_index, section_name in enumerate(path_parts):
+        is_final_level = level_index == len(path_parts) - 1
+        
+        # Fetch sections at current level
+        sections = await _fetch_sections_at_level(client, base_url, project_identifier, headers, current_parent_id)
+        
+        # Find matching section (case-insensitive)
+        section_id = _find_section_by_name(sections, section_name)
+        
+        if section_id is None:
+            available_names = [s.get("name") for s in sections if s.get("name")]
+            raise ValueError(
+                f"Section '{section_name}' not found at level {level_index + 1}. "
+                f"Available sections: {', '.join(available_names)}"
+            )
+        
+        # Return final section ID or continue to next level
+        if is_final_level:
+            return [section_id]
+        
+        current_parent_id = section_id
+    
+    return []
+
+
+def _find_section_by_name(sections: List[Dict[str, Any]], target_name: str) -> Optional[int]:
+    """Find section ID by name (case-insensitive).
+    
+    Args:
+        sections: List of section objects
+        target_name: Section name to find
+        
+    Returns:
+        Section ID if found, None otherwise
+    """
+    target_lower = target_name.lower()
     
     for section in sections:
-        parent_id = section.get("parent_id")
-        if parent_id is None:
-            root_sections.append(section)
-        else:
-            if parent_id not in hierarchy:
-                hierarchy[parent_id] = []
-            hierarchy[parent_id].append(section)
+        section_name = section.get("name")
+        if section_name and str(section_name).strip().lower() == target_lower:
+            section_id = section.get("id")
+            return section_id if isinstance(section_id, int) else None
     
-    # Recursive function to find sections by path
-    def find_sections_by_path(sections_list: List[Dict[str, Any]], remaining_path: List[str]) -> List[int]:
-        if not remaining_path:
-            return [s.get("id") for s in sections_list if isinstance(s.get("id"), int)]
-        
-        current_name = remaining_path[0].lower()
-        matching_sections = []
-        
-        for section in sections_list:
-            section_name = str(section.get("name", "")).strip().lower()
-            if section_name == current_name:
-                section_id = section.get("id")
-                if isinstance(section_id, int):
-                    if len(remaining_path) == 1:
-                        # This is the final level, return this section
-                        matching_sections.append(section_id)
-                    else:
-                        # Look in children for the next level
-                        children = hierarchy.get(section_id, [])
-                        child_matches = find_sections_by_path(children, remaining_path[1:])
-                        matching_sections.extend(child_matches)
-        
-        return matching_sections
+    return None
+
+
+async def _fetch_sections_at_level(
+    client: httpx.AsyncClient, 
+    base_url: str, 
+    project_identifier: Union[int, str], 
+    headers: Dict[str, str], 
+    parent_section_id: Optional[int]
+) -> List[Dict[str, Any]]:
+    """Fetch sections at a specific level in the hierarchy.
     
-    # Start from root sections
-    return find_sections_by_path(root_sections, path_parts)
+    Args:
+        client: HTTP client instance
+        base_url: API base URL
+        project_identifier: Project ID or key  
+        headers: Request headers
+        parent_section_id: Parent section ID (None for root level)
+        
+    Returns:
+        List of sections at the specified level
+        
+    Raises:
+        httpx.HTTPStatusError: For API errors
+        ValueError: For unexpected response structure
+    """
+    # Build URL based on hierarchy level
+    if parent_section_id is None:
+        url = f"{base_url}/{project_identifier}/sections"
+    else:
+        url = f"{base_url}/{project_identifier}/sections/{parent_section_id}/sections"
+    
+    # Fetch and parse response
+    resp = await client.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    
+    # Extract sections list from various response formats
+    if isinstance(data, list):
+        return data
+    
+    if isinstance(data, dict):
+        # Try common response patterns in priority order
+        for key in ["sections", "test_sections", "section_list", "data"]:
+            sections_list = data.get(key)
+            if isinstance(sections_list, list):
+                return sections_list
+    
+    # Unexpected response structure
+    raise ValueError(f"Unexpected sections API response structure: {type(data)}")
 
 @mcp.tool()
 async def fr_list_testcases(project_identifier: Optional[Union[int, str]] = None) -> Any:
@@ -1105,9 +1184,17 @@ async def fr_filter_tasks(
     project_identifier: Optional[Union[int, str]] = None,
     query: Optional[Union[str, Dict[str, Any]]] = None,
     query_format: str = "comma_separated",
+    query_hash: Optional[List[Dict[str, Any]]] = None,
+    
+    # Additional API parameters
+    filter_id: Optional[Union[int, str]] = None,
+    include: Optional[str] = None,
+    page: Optional[int] = 1,
+    per_page: Optional[int] = 30,
+    sort: Optional[str] = None,
+    sort_type: Optional[str] = None,
+    
     # Standard fields
-    title: Optional[str] = None,
-    description: Optional[str] = None,
     status_id: Optional[Union[int, str]] = None,
     priority_id: Optional[Union[int, str]] = None,
     owner_id: Optional[Union[int, str]] = None,
@@ -1119,28 +1206,33 @@ async def fr_filter_tasks(
     due_by: Optional[str] = None,
     release_id: Optional[Union[int, str]] = None,
     tags: Optional[Union[str, List[str]]] = None,
-    document_ids: Optional[Union[str, List[Union[int, str]]]] = None,
     parent_id: Optional[Union[int, str]] = None,
     epic_id: Optional[Union[int, str]] = None,
-    sub_project_id: Optional[Union[int, str]] = None,
-    effort_value: Optional[Union[int, str]] = None,
-    duration_value: Optional[Union[int, str]] = None
+    sub_project_id: Optional[Union[int, str]] = None
 ) -> Any:
     """Filter tasks/issues using field labels with automatic name-to-ID resolution and custom field detection.
 
     This function supports both individual field parameters and query-based filtering with comprehensive
     label-to-name mapping and name-to-ID resolution for all field types including custom fields.
     
-    Field labels are used instead of field names for better user experience.
+    Supports native Freshrelease query_hash format for advanced filtering.
 
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         query: Filter query in JSON string or comma-separated format (optional)
         query_format: Format of the query - "comma_separated" or "json" (default: "comma_separated")
+        query_hash: Native Freshrelease query_hash format (optional)
+            Example: [{"condition": "status_id", "operator": "is_in", "value": [18, 74]}]
+        
+        # Additional API parameters
+        filter_id: Saved filter ID to apply (optional)
+        include: Fields to include in response (e.g., "custom_field,owner,priority,status")
+        page: Page number for pagination (default: 1)
+        per_page: Number of items per page (default: 30)
+        sort: Field to sort by (e.g., "display_id", "created_at")
+        sort_type: Sort direction ("asc" or "desc")
         
         # Standard fields (optional) - supports both IDs and names
-        title: Filter by title
-        description: Filter by description
         status_id: Filter by status ID or name (e.g., "In Progress", "Done")
         priority_id: Filter by priority ID
         owner_id: Filter by owner ID, name, or email (e.g., "John Doe", "john@example.com")
@@ -1152,46 +1244,43 @@ async def fr_filter_tasks(
         due_by: Filter by due date (YYYY-MM-DD format)
         release_id: Filter by release ID or name (e.g., "Release 1.0")
         tags: Filter by tags (string or array)
-        document_ids: Filter by document IDs (string or array)
         parent_id: Filter by parent issue ID or key (e.g., "PROJ-123")
         epic_id: Filter by epic issue ID or key (e.g., "PROJ-456")
         sub_project_id: Filter by sub project ID or name (e.g., "Frontend")
-        effort_value: Filter by effort value
-        duration_value: Filter by duration value
         
     Returns:
         Filtered list of tasks or error response
         
     Examples:
+        # Using native query_hash format
+        fr_filter_tasks(query_hash=[
+            {"condition": "status_id", "operator": "is_in", "value": [18, 74]},
+            {"condition": "owner_id", "operator": "is_in", "value": [53089]}
+        ])
+        
+        # Using saved filter with pagination
+        fr_filter_tasks(filter_id=102776, include="custom_field,owner,priority,status", page=1, per_page=30)
+        
+        # Date range filtering using query_hash
+        fr_filter_tasks(query_hash=[
+            {"condition": "start_date", "operator": "is_in_the_range", 
+             "value": "2024-12-31T18:30:00.000Z,2025-08-31T18:29:59.999Z"}
+        ])
+        
         # Using individual field parameters with names (automatically resolved to IDs)
         fr_filter_tasks(owner_id="John Doe", status_id="In Progress", issue_type_id="Bug")
         
-        # Using project key instead of ID
-        fr_filter_tasks(project_id="PROJ123", sprint_id="Sprint 1")
-        
-        # Using issue keys for parent/epic
-        fr_filter_tasks(parent_id="PROJ-123", epic_id="PROJ-456")
-        
         # Using query format with field labels and custom fields
         fr_filter_tasks(query="Owner:John Doe,Status:In Progress,Theme:ITPM")
-        fr_filter_tasks(query="Title:bug fix,Issue Type:Bug")
-        
-        # JSON format with field labels
-        fr_filter_tasks(query='{"Owner":"John Doe","Status":"In Progress","Theme":"ITPM"}', query_format="json")
-        
-        # Mixed ID and name filtering
-        fr_filter_tasks(owner_id=123, status_id="In Progress", sprint_id="Sprint 1")
-        
-        # Get all tasks (no filter)
-        fr_filter_tasks()
         
     Note:
-        - Field labels are automatically mapped to field names (e.g., "Title" -> "title", "Issue Type" -> "issue_type")
+        - Field labels are automatically mapped to field names (e.g., "Status" -> "status_id", "Issue Type" -> "issue_type")
         - All field names support both human-readable names and IDs
         - Custom fields are automatically detected and handled
         - Name-to-ID resolution works for: owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id
         - Custom field values are also resolved to IDs when possible
-        - You can use either field labels (user-friendly) or field names (API names) in queries
+        - query_hash format takes precedence over individual field parameters
+        - Supports all native Freshrelease operators: "is", "is_in", "is_in_the_range", "contains", etc.
     """
     try:
         # Validate environment variables
@@ -1200,10 +1289,55 @@ async def fr_filter_tasks(
         headers = env_data["headers"]
         project_id = get_project_identifier(project_identifier)
 
+        # Build base parameters
+        params = {}
+        
+        # Add pagination and sorting parameters
+        if page:
+            params["page"] = page
+        if per_page:
+            params["per_page"] = per_page
+        if sort:
+            params["sort"] = sort
+        if sort_type:
+            params["sort_type"] = sort_type
+        if include:
+            params["include"] = include
+        if filter_id:
+            params["filter_id"] = filter_id
+
+        # Handle native query_hash format (highest priority)
+        if query_hash:
+            for i, query_item in enumerate(query_hash):
+                condition = query_item.get("condition")
+                operator = query_item.get("operator")
+                value = query_item.get("value")
+                
+                if condition and operator and value is not None:
+                    params[f"query_hash[{i}][condition]"] = condition
+                    params[f"query_hash[{i}][operator]"] = operator
+                    
+                    # Handle array values
+                    if isinstance(value, list):
+                        for val in value:
+                            key = f"query_hash[{i}][value][]"
+                            if key in params:
+                                # Convert to list if multiple values
+                                if not isinstance(params[key], list):
+                                    params[key] = [params[key]]
+                                params[key].append(val)
+                            else:
+                                params[key] = val
+                    else:
+                        params[f"query_hash[{i}][value]"] = value
+            
+            # Make API request with query_hash
+            url = f"{base_url}/{project_id}/issues"
+            result = await make_api_request("GET", url, headers, params=params)
+            return result
+
         # Collect individual field parameters (excluding project_id to avoid duplication)
         field_params = {
-            "title": title,
-            "description": description,
             "status_id": status_id,
             "priority_id": priority_id,
             "owner_id": owner_id,
@@ -1214,22 +1348,18 @@ async def fr_filter_tasks(
             "due_by": due_by,
             "release_id": release_id,
             "tags": tags,
-            "document_ids": document_ids,
             "parent_id": parent_id,
             "epic_id": epic_id,
-            "sub_project_id": sub_project_id,
-            "effort_value": effort_value,
-            "duration_value": duration_value
+            "sub_project_id": sub_project_id
         }
 
         # Filter out None values
         field_params = {k: v for k, v in field_params.items() if v is not None}
 
-        # Handle query parameter if provided
+        # Handle legacy query parameter format
         if query:
             async with httpx.AsyncClient() as client:
                 # Get form fields (standard and custom) for the project to process query properly
-                # Use a default issue type to get general form fields
                 fields_info = await _get_project_fields_mapping(project_id, project_identifier)
                 if "error" in fields_info:
                     return fields_info
@@ -1250,18 +1380,52 @@ async def fr_filter_tasks(
                     processed_query_str = process_query_with_custom_fields(query, custom_fields)
                     query_pairs = parse_query_string(processed_query_str)
                 
-                # Resolve all field labels to names, then names and values to IDs
-                resolved_query = await _resolve_query_fields(
-                    query_pairs, project_id, client, base_url, headers, custom_fields, field_label_to_name_map
-                )
+                # Convert query_pairs to query_hash format
+                query_hash_items = []
+                for i, (field, value) in enumerate(query_pairs):
+                    # Map field label to name if needed
+                    if field in field_label_to_name_map:
+                        field = field_label_to_name_map[field]
+                    
+                    # Determine operator based on value type
+                    if isinstance(value, list):
+                        operator = "is_in"
+                    else:
+                        operator = "is"
+                    
+                    query_hash_items.append({
+                        "condition": field,
+                        "operator": operator,
+                        "value": value
+                    })
                 
-                # Make API request with resolved parameters
-                url = f"{base_url}/{project_id}/issues/filter"
-                result = await make_api_request("GET", url, headers, params=resolved_query)
+                # Build query_hash parameters
+                for i, query_item in enumerate(query_hash_items):
+                    condition = query_item.get("condition")
+                    operator = query_item.get("operator") 
+                    value = query_item.get("value")
+                    
+                    params[f"query_hash[{i}][condition]"] = condition
+                    params[f"query_hash[{i}][operator]"] = operator
+                    
+                    if isinstance(value, list):
+                        for val in value:
+                            key = f"query_hash[{i}][value][]"
+                            if key in params:
+                                if not isinstance(params[key], list):
+                                    params[key] = [params[key]]
+                                params[key].append(val)
+                            else:
+                                params[key] = val
+                    else:
+                        params[f"query_hash[{i}][value]"] = value
+                
+                # Make API request with converted query
+                url = f"{base_url}/{project_id}/issues"
+                result = await make_api_request("GET", url, headers, params=params)
                 return result
 
-        # Resolve names to IDs for individual field parameters
-        resolved_params = {}
+        # Handle individual field parameters
         if field_params:
             async with httpx.AsyncClient() as client:
                 # Get form fields (standard and custom) for individual parameter processing
@@ -1272,20 +1436,49 @@ async def fr_filter_tasks(
                 field_label_to_name_map = fields_info["field_label_to_name_map"]
                 custom_fields = fields_info["custom_fields"]
                 
-                # Convert field_params to query_pairs format for consistent processing
-                query_pairs = list(field_params.items())
+                # Convert field_params to query_hash format
+                query_hash_items = []
+                for i, (field, value) in enumerate(field_params.items()):
+                    # Map field label to name if needed
+                    if field in field_label_to_name_map:
+                        field = field_label_to_name_map[field]
+                    
+                    # Determine operator based on value type
+                    if isinstance(value, list):
+                        operator = "is_in"
+                    else:
+                        operator = "is"
+                    
+                    query_hash_items.append({
+                        "condition": field,
+                        "operator": operator,
+                        "value": value
+                    })
                 
-                # Use the same resolution logic as query processing
-                resolved_params = await _resolve_query_fields(
-                    query_pairs, project_id, client, base_url, headers, custom_fields, field_label_to_name_map
-                )
+                # Build query_hash parameters
+                for i, query_item in enumerate(query_hash_items):
+                    condition = query_item.get("condition")
+                    operator = query_item.get("operator")
+                    value = query_item.get("value")
+                    
+                    params[f"query_hash[{i}][condition]"] = condition
+                    params[f"query_hash[{i}][operator]"] = operator
+                    
+                    if isinstance(value, list):
+                        for val in value:
+                            key = f"query_hash[{i}][value][]"
+                            if key in params:
+                                if not isinstance(params[key], list):
+                                    params[key] = [params[key]]
+                                params[key].append(val)
+                            else:
+                                params[key] = val
+                    else:
+                        params[f"query_hash[{i}][value]"] = value
 
-        # Make the API request with individual parameters 
-        url = f"{base_url}/{project_id}/issues/filter"
-        params = resolved_params if resolved_params else {}
-        
+        # Make the API request - use /issues endpoint with query_hash format
+        url = f"{base_url}/{project_id}/issues"
         result = await make_api_request("GET", url, headers, params=params)
-        
         return result
 
     except Exception as e:
@@ -1431,8 +1624,6 @@ async def fr_save_filter(
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         query: Filter query in string or dict format (optional)
         query_format: Format of the query string ("comma_separated" or "json")
-        title: Filter by title (optional)
-        description: Filter by description (optional)
         status_id: Filter by status ID or name (optional)
         priority_id: Filter by priority ID (optional)
         owner_id: Filter by owner ID, name, or email (optional)
@@ -1558,7 +1749,6 @@ async def fr_filter_testcases(
     or internal condition names. It supports both approaches for maximum flexibility:
     
     Field Label Support (NEW):
-    - "Title": Maps to title condition
     - "Pre-requisite": Maps to pre_requisite condition  
     - "Steps to Execute": Maps to steps condition
     - "Expected Results": Maps to expected_results condition
@@ -1608,7 +1798,6 @@ async def fr_filter_testcases(
         # Mixed approach: Use both labels and condition names
         test_cases = fr_filter_testcases(
             filter_rules=[
-                {"condition": "Title", "operator": "contains", "value": "Login"},
                 {"condition": "type_id", "operator": "is", "value": "Smoke Test"},
                 {"condition": "tags", "operator": "is_in", "value": ["regression"]}
             ]
@@ -2177,19 +2366,28 @@ async def _find_item_by_name(
     response.raise_for_status()
     data = response.json()
     
+    # Handle both direct list and nested object responses
+    items_list = None
     if isinstance(data, list):
+        items_list = data
+    elif isinstance(data, dict) and data_type in data:
+        items_list = data[data_type]
+    else:
+        raise ValueError(f"Unexpected response structure for {data_type}")
+    
+    if items_list:
         target = item_name.strip().lower()
         # For issue_types, use 'label' field instead of 'name' field
         field_name = "label" if data_type == "issue_types" else "name"
         
-        for item in data:
+        for item in items_list:
             field_value = str(item.get(field_name, "")).strip().lower()
             if field_value == target:
                 return item
-        available_names = [str(item.get(field_name, "")) for item in data if item.get(field_name)]
+        available_names = [str(item.get(field_name, "")) for item in items_list if item.get(field_name)]
         raise ValueError(f"{data_type.title().replace('_', ' ')} '{item_name}' not found. Available {data_type}: {', '.join(available_names)}")
     
-    raise ValueError(f"Unexpected response structure for {data_type}")
+    raise ValueError(f"No {data_type} found in response")
 
 
 async def _generic_lookup_by_name(
@@ -2273,18 +2471,27 @@ async def _resolve_user_name_to_id(
         params = {"q": user_identifier}
         response = await client.get(url, headers=headers, params=params)
         response.raise_for_status()
-        users = response.json()
+        users_data = response.json()
         
-        if isinstance(users, list) and users:
+        # Handle nested response structure {"users": [...], "meta": {...}}
+        users_list = None
+        if isinstance(users_data, list):
+            users_list = users_data  # Direct array (backward compatibility)
+        elif isinstance(users_data, dict) and "users" in users_data:
+            users_list = users_data["users"]  # Nested structure
+        else:
+            raise ValueError(f"Unexpected response structure for users API")
+        
+        if users_list:
             # Look for exact name match first
-            for user in users:
+            for user in users_list:
                 if user.get("name", "").lower() == user_identifier.lower():
                     return user["id"]
                 if user.get("email", "").lower() == user_identifier.lower():
                     return user["id"]
             
             # If no exact match, return the first result
-            return users[0]["id"]
+            return users_list[0]["id"]
         
         raise ValueError(f"User '{user_identifier}' not found")
     except Exception as e:
@@ -2339,7 +2546,7 @@ async def _resolve_query_fields(
     """Resolve query field labels to names, then names and values to their proper IDs.
     
     Handles:
-    - Field label to name mapping (e.g., "Title" -> "title", "Issue Type" -> "issue_type")
+    - Field label to name mapping (e.g., "Status" -> "status_id", "Issue Type" -> "issue_type")
     - Standard fields (owner_id, status_id, issue_type_id, sprint_id, release_id, sub_project_id)
     - Custom fields (with cf_ prefix)
     - Name-to-ID resolution for all supported field types
