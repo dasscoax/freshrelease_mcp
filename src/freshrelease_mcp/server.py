@@ -1308,28 +1308,47 @@ async def fr_filter_tasks(
 
         # Handle native query_hash format (highest priority)
         if query_hash:
-            for i, query_item in enumerate(query_hash):
-                condition = query_item.get("condition")
-                operator = query_item.get("operator")
-                value = query_item.get("value")
+            async with httpx.AsyncClient() as client:
+                # Get form fields for value resolution
+                fields_info = await _get_project_fields_mapping(project_id, project_identifier)
+                if "error" in fields_info:
+                    return fields_info
                 
-                if condition and operator and value is not None:
-                    params[f"query_hash[{i}][condition]"] = condition
-                    params[f"query_hash[{i}][operator]"] = operator
+                field_label_to_name_map = fields_info["field_label_to_name_map"]
+                custom_fields = fields_info["custom_fields"]
+                
+                for i, query_item in enumerate(query_hash):
+                    condition = query_item.get("condition")
+                    operator = query_item.get("operator")
+                    value = query_item.get("value")
                     
-                    # Handle array values
-                    if isinstance(value, list):
-                        for val in value:
-                            key = f"query_hash[{i}][value][]"
-                            if key in params:
-                                # Convert to list if multiple values
-                                if not isinstance(params[key], list):
-                                    params[key] = [params[key]]
-                                params[key].append(val)
-                            else:
-                                params[key] = val
-                    else:
-                        params[f"query_hash[{i}][value]"] = value
+                    if condition and operator and value is not None:
+                        params[f"query_hash[{i}][condition]"] = condition
+                        params[f"query_hash[{i}][operator]"] = operator
+                        
+                        # Resolve values to IDs if needed
+                        resolved_value = await _resolve_query_fields(
+                            {condition: value}, 
+                            project_id, 
+                            project_identifier, 
+                            field_label_to_name_map, 
+                            custom_fields
+                        )
+                        final_value = resolved_value.get(condition, value)
+                        
+                        # Handle array values
+                        if isinstance(final_value, list):
+                            for val in final_value:
+                                key = f"query_hash[{i}][value][]"
+                                if key in params:
+                                    # Convert to list if multiple values
+                                    if not isinstance(params[key], list):
+                                        params[key] = [params[key]]
+                                    params[key].append(val)
+                                else:
+                                    params[key] = val
+                        else:
+                            params[f"query_hash[{i}][value]"] = final_value
             
             # Make API request with query_hash
             url = f"{base_url}/{project_id}/issues"
