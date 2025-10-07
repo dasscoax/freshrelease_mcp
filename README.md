@@ -32,6 +32,7 @@ An MCP server that enables AI models to interact with Freshrelease through power
 | `fr_get_project` | Get project details | `project_identifier` |
 | `fr_get_task` | Get task by ID/key | `project_identifier`, `key` |
 | `fr_get_all_tasks` | List all project tasks | `project_identifier` |
+| `fr_get_epic_tasks` | Get all tasks under an epic/parent | `epic_key`, `include_details`, `include` |
 | `fr_get_issue_type_by_name` | Resolve issue type names | `issue_type_name` |
 | `get_task_default_and_custom_fields` | Get form fields for issue types | `issue_type_name` |
 | `fr_search_users` | Find users by name/email | `search_text` |
@@ -123,6 +124,14 @@ Add to `~/.cursor/mcp.json`:
 **Get specific task details:**
 > "Get details for task FS-123"
 
+**Get all tasks under an epic:**
+> "Show me all tasks and their status under epic FS-223786"
+
+The AI will automatically:
+- Fetch the epic details and all child tasks
+- Provide status breakdown and progress summary
+- Show assignee distribution and priority breakdown
+
 ### 📋 Advanced Task Filtering  
 **Use natural language filtering:**
 > "Find all high priority tasks owned by John Doe that are currently in progress"
@@ -154,16 +163,16 @@ The AI can navigate up to 7 levels deep in section hierarchies automatically.
 
 ## 🆕 Latest Updates
 
-### **v1.7.6 - Enhanced Filtering & Navigation**
-- ✅ **Native Query Support**: Full `query_hash` format support with all Freshrelease operators
-- ✅ **Optimized Performance**: 42% code reduction with improved section hierarchy navigation  
-- ✅ **Enhanced API Compatibility**: Handles both nested `{"users": [...]}` and direct array responses
-- ✅ **Advanced Pagination**: Support for `filter_id`, `include`, `page`, `per_page`, and sorting
-- ✅ **7-Level Hierarchies**: Navigate deep section structures like `"ESM > Account Clone > Sub-section"`
+### **v1.8.5 - Epic Management & Enhanced Filtering**
+- ✅ **Epic Task Management**: New `fr_get_epic_tasks` tool to fetch all tasks under an epic with progress summaries
+- ✅ **Enhanced Field Mapping**: Fixed filtering issues with improved field label resolution
+- ✅ **Better Error Handling**: Comprehensive logging and error messages for debugging
+- ✅ **Issue Key Resolution**: Support for parent_id and epic_id filtering using issue keys
 
-### **v1.7.5 - Documentation & UX**  
-- ✅ **Human-Readable Examples**: Conversational prompts instead of technical function calls
-- ✅ **Streamlined README**: Removed counts, improved organization and clarity
+### **v1.8.4 - Filter Bug Fixes**  
+- ✅ **Fixed Fields Mapping Error**: Resolved "Failed to get project fields mapping: 0" error
+- ✅ **API Response Handling**: Better handling of nested vs. direct array responses
+- ✅ **Common Field Mappings**: Added support for "Parent", "Epic", "Owner" field labels
 
 ## 🔧 Troubleshooting
 

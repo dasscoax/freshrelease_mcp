@@ -512,6 +512,166 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None)
     except Exception as e:
         return create_error_response(f"Failed to get all tasks: {str(e)}")
 
+
+@mcp.tool()
+@performance_monitor("fr_get_epic_tasks")
+async def fr_get_epic_tasks(
+    epic_key: Union[int, str],
+    project_identifier: Optional[Union[int, str]] = None,
+    include_details: bool = True,
+    include: Optional[str] = None,
+    page: Optional[int] = 1,
+    per_page: Optional[int] = 50
+) -> Dict[str, Any]:
+    """Get all tasks and their details that belong to a specific epic or parent task.
+    
+    This method fetches all child tasks/subtasks under a given epic or parent task,
+    providing a complete overview of the epic's scope and progress.
+    
+    Args:
+        epic_key: Epic/Parent task ID or key (e.g., "FS-12345", 123456)
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        include_details: Whether to include detailed task information (default: True)
+        include: Additional fields to include (e.g., "custom_field,owner,priority,status")
+        page: Page number for pagination (default: 1)
+        per_page: Number of items per page (default: 50)
+        
+    Returns:
+        Dictionary containing epic details and list of child tasks or error response
+        
+    Examples:
+        # Get all tasks under epic FS-12345
+        fr_get_epic_tasks("FS-12345")
+        
+        # Get tasks with custom fields and specific pagination
+        fr_get_epic_tasks("FS-12345", include="custom_field,owner,status", per_page=100)
+    """
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        
+        logging.info(f"Fetching tasks for epic/parent: {epic_key}")
+        
+        # First, get the epic/parent task details
+        epic_details = None
+        if include_details:
+            try:
+                epic_response = await fr_get_task(project_identifier, epic_key)
+                if "error" not in epic_response:
+                    epic_details = epic_response
+                    logging.info(f"Retrieved epic details: {epic_details.get('issue', {}).get('title', 'N/A')}")
+            except Exception as e:
+                logging.warning(f"Could not fetch epic details: {str(e)}")
+        
+        # Build query to get all child tasks
+        # Use both parent_id and epic_id to cover all possible relationships
+        query_hash = [
+            {"condition": "parent_id", "operator": "is", "value": epic_key}
+        ]
+        
+        # Also check for epic_id if the epic_key is different from parent_id
+        # Some systems use separate epic relationships
+        try:
+            # Try to add epic_id filter as well for comprehensive results
+            query_hash.append({"condition": "epic_id", "operator": "is", "value": epic_key})
+        except Exception:
+            # If epic_id filter fails, continue with just parent_id
+            pass
+        
+        # Set up parameters for child task filtering
+        filter_params = {
+            "query_hash": query_hash,
+            "project_identifier": project_identifier,
+            "page": page,
+            "per_page": per_page
+        }
+        
+        if include:
+            filter_params["include"] = include
+        
+        # Get child tasks using the existing filter function
+        child_tasks_response = await fr_filter_tasks(**filter_params)
+        
+        if "error" in child_tasks_response:
+            return child_tasks_response
+        
+        # Extract the tasks list from the response
+        if isinstance(child_tasks_response, dict) and "issues" in child_tasks_response:
+            child_tasks = child_tasks_response["issues"]
+            pagination_info = {
+                "page": child_tasks_response.get("page", page),
+                "per_page": child_tasks_response.get("per_page", per_page),
+                "total": child_tasks_response.get("total", len(child_tasks))
+            }
+        elif isinstance(child_tasks_response, list):
+            child_tasks = child_tasks_response
+            pagination_info = {
+                "page": page,
+                "per_page": per_page,
+                "total": len(child_tasks)
+            }
+        else:
+            child_tasks = []
+            pagination_info = {
+                "page": page,
+                "per_page": per_page,
+                "total": 0
+            }
+        
+        # Prepare the response
+        result = {
+            "epic_key": epic_key,
+            "child_tasks": child_tasks,
+            "child_tasks_count": len(child_tasks),
+            "pagination": pagination_info
+        }
+        
+        # Add epic details if requested and available
+        if include_details and epic_details:
+            result["epic_details"] = epic_details
+        
+        # Add summary statistics
+        if child_tasks:
+            # Count tasks by status
+            status_counts = {}
+            priority_counts = {}
+            assignee_counts = {}
+            
+            for task in child_tasks:
+                task_data = task if isinstance(task, dict) else task.get("issue", {})
+                
+                # Status counts
+                status = task_data.get("status", {})
+                status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
+                status_counts[status_name] = status_counts.get(status_name, 0) + 1
+                
+                # Priority counts  
+                priority = task_data.get("priority", {})
+                priority_name = priority.get("name", "Unknown") if isinstance(priority, dict) else str(priority)
+                priority_counts[priority_name] = priority_counts.get(priority_name, 0) + 1
+                
+                # Assignee counts
+                owner = task_data.get("owner", {})
+                owner_name = owner.get("name", "Unassigned") if isinstance(owner, dict) else "Unassigned"
+                assignee_counts[owner_name] = assignee_counts.get(owner_name, 0) + 1
+            
+            result["summary"] = {
+                "status_breakdown": status_counts,
+                "priority_breakdown": priority_counts,
+                "assignee_breakdown": assignee_counts
+            }
+        
+        logging.info(f"Retrieved {len(child_tasks)} child tasks for epic {epic_key}")
+        return result
+
+    except Exception as e:
+        error_msg = f"Failed to get epic tasks: {str(e)}"
+        logging.error(error_msg)
+        return create_error_response(error_msg)
+
 async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]] = None, issue_type_name: str = None) -> Dict[str, Any]:
     """Fetch the issue type object for a given human name within a project.
 
@@ -872,7 +1032,7 @@ def _find_section_by_name(sections: List[Dict[str, Any]], target_name: str) -> O
     for section in sections:
         section_name = section.get("name")
         if section_name and str(section_name).strip().lower() == target_lower:
-            section_id = section.get("id")
+                section_id = section.get("id")
             return section_id if isinstance(section_id, int) else None
     
     return None
@@ -904,7 +1064,7 @@ async def _fetch_sections_at_level(
     # Build URL based on hierarchy level
     if parent_section_id is None:
         url = f"{base_url}/{project_identifier}/sections"
-    else:
+                    else:
         url = f"{base_url}/{project_identifier}/sections/{parent_section_id}/sections"
     
     # Fetch and parse response
@@ -1119,32 +1279,69 @@ async def _get_project_fields_mapping(
         
         # Get issue types
         issue_types_url = f"{base_url}/{project_id}/issue_types"
+        logging.info(f"Fetching issue types from: {issue_types_url}")
+        
         response = await client.get(issue_types_url, headers=headers)
         response.raise_for_status()
         issue_types_data = response.json()
         
-        if not issue_types_data or len(issue_types_data) == 0:
+        logging.info(f"Issue types response: {issue_types_data}")
+        
+        # Handle both direct array and nested object responses
+        if isinstance(issue_types_data, dict) and "issue_types" in issue_types_data:
+            issue_types_list = issue_types_data["issue_types"]
+        elif isinstance(issue_types_data, list):
+            issue_types_list = issue_types_data
+        else:
+            logging.error(f"Unexpected issue types response format: {type(issue_types_data)}")
+            return {"error": f"Unexpected issue types response format: {type(issue_types_data)}"}
+        
+        if not issue_types_list or len(issue_types_list) == 0:
             return {"error": "No issue types found in project"}
         
         # Use the first issue type's label to get form fields
-        first_issue_type = issue_types_data[0]
+        first_issue_type = issue_types_list[0]
         issue_type_name = first_issue_type.get("label", "")
         
         if not issue_type_name:
+            logging.error(f"Issue type has no label: {first_issue_type}")
             return {"error": "Issue type has no label"}
+        
+        logging.info(f"Using issue type '{issue_type_name}' for form fields")
         
         # Get form fields using the get_task_default_and_custom_fields method
         form_result = await get_task_default_and_custom_fields(project_identifier, issue_type_name)
         if "error" in form_result:
+            logging.error(f"Form fields error: {form_result}")
             return form_result
         
         # Extract fields from the form
         form_data = form_result.get("form", {})
         fields_list = form_data.get("fields", [])
         
+        logging.info(f"Found {len(fields_list)} form fields")
+        
         # Create mapping from label to name
         field_label_to_name_map = {}
         custom_fields = []
+        
+        # Add common field mappings that might not be in form fields
+        common_mappings = {
+            "parent": "parent_id",
+            "epic": "epic_id", 
+            "owner": "owner_id",
+            "assignee": "owner_id",
+            "status": "status_id",
+            "priority": "priority_id",
+            "issue type": "issue_type_id",
+            "sprint": "sprint_id",
+            "release": "release_id",
+            "tags": "tags",
+            "sub project": "sub_project_id",
+            "story points": "story_points"
+        }
+        
+        field_label_to_name_map.update(common_mappings)
         
         for field in fields_list:
             field_name = field.get("name", "")
@@ -1165,6 +1362,8 @@ async def _get_project_fields_mapping(
                         "choices": field.get("choices", [])
                     })
         
+        logging.info(f"Created field mapping with {len(field_label_to_name_map)} entries")
+        
         return {
             "field_label_to_name_map": field_label_to_name_map,
             "custom_fields": custom_fields,
@@ -1172,9 +1371,14 @@ async def _get_project_fields_mapping(
             "total_fields": len(fields_list)
         }
         
+    except httpx.HTTPStatusError as e:
+        error_msg = f"HTTP {e.response.status_code} error getting project fields mapping: {str(e)}"
+        logging.error(error_msg)
+        return {"error": error_msg}
     except Exception as e:
-        logging.error(f"Error getting project fields mapping: {str(e)}")
-        return {"error": f"Failed to get project fields mapping: {str(e)}"}
+        error_msg = f"Failed to get project fields mapping: {type(e).__name__}: {str(e)}"
+        logging.error(error_msg)
+        return {"error": error_msg}
 
 
 @mcp.tool()
@@ -1300,8 +1504,12 @@ async def fr_filter_tasks(
             params["sort"] = sort
         if sort_type:
             params["sort_type"] = sort_type
-        if include:
+        # Only add include parameter if explicitly provided (not None and not empty)
+        if include is not None and include.strip():
             params["include"] = include
+            logging.info(f"fr_filter_tasks: Including fields: {include}")
+        else:
+            logging.info("fr_filter_tasks: No include parameter specified - skipping include field")
         if filter_id:
             params["filter_id"] = filter_id
 
@@ -1326,14 +1534,16 @@ async def fr_filter_tasks(
                         params[f"query_hash[{i}][operator]"] = operator
                         
                         # Resolve values to IDs if needed
-                        resolved_value = await _resolve_query_fields(
-                            {condition: value}, 
+                        resolved_values = await _resolve_query_fields(
+                            [(condition, value)], 
                             project_id, 
-                            project_identifier, 
-                            field_label_to_name_map, 
-                            custom_fields
+                            client, 
+                            base_url, 
+                            headers,
+                            custom_fields,
+                            field_label_to_name_map
                         )
-                        final_value = resolved_value.get(condition, value)
+                        final_value = resolved_values.get(condition, value)
                         
                         # Handle array values
                         if isinstance(final_value, list):
@@ -1374,8 +1584,8 @@ async def fr_filter_tasks(
         # Filter out None values
         field_params = {k: v for k, v in field_params.items() if v is not None}
 
-        # Handle legacy query parameter format
-        if query:
+        # Handle legacy query parameter format (only if query is provided and not empty)
+        if query and str(query).strip():
             async with httpx.AsyncClient() as client:
                 # Get form fields (standard and custom) for the project to process query properly
                 fields_info = await _get_project_fields_mapping(project_id, project_identifier)
@@ -1394,49 +1604,63 @@ async def fr_filter_tasks(
                         query_dict = query
                     query_pairs = list(query_dict.items())
                 else:
-                    # Comma-separated format
+                    # Comma-separated format (only process if applicable)
                     processed_query_str = process_query_with_custom_fields(query, custom_fields)
                     query_pairs = parse_query_string(processed_query_str)
                 
-                # Convert query_pairs to query_hash format
-                query_hash_items = []
-                for i, (field, value) in enumerate(query_pairs):
-                    # Map field label to name if needed
-                    if field in field_label_to_name_map:
-                        field = field_label_to_name_map[field]
-                    
-                    # Determine operator based on value type
-                    if isinstance(value, list):
-                        operator = "is_in"
+                    # Skip processing if no valid query pairs found
+                    if not query_pairs:
+                        logging.info(f"No valid query pairs found in: '{query}' - skipping comma-separated processing")
+                        # Continue to other filtering methods
                     else:
-                        operator = "is"
-                    
-                    query_hash_items.append({
-                        "condition": field,
-                        "operator": operator,
-                        "value": value
-                    })
+                        logging.info(f"Processing {len(query_pairs)} comma-separated query pairs: {query_pairs}")
                 
-                # Build query_hash parameters
-                for i, query_item in enumerate(query_hash_items):
-                    condition = query_item.get("condition")
-                    operator = query_item.get("operator") 
-                    value = query_item.get("value")
-                    
-                    params[f"query_hash[{i}][condition]"] = condition
-                    params[f"query_hash[{i}][operator]"] = operator
-                    
-                    if isinstance(value, list):
-                        for val in value:
-                            key = f"query_hash[{i}][value][]"
-                            if key in params:
-                                if not isinstance(params[key], list):
-                                    params[key] = [params[key]]
-                                params[key].append(val)
-                            else:
-                                params[key] = val
-                    else:
-                        params[f"query_hash[{i}][value]"] = value
+                # Convert query_pairs to query_hash format (only if we have valid pairs)
+                query_hash_items = []
+                if query_pairs:
+                    for i, (field, value) in enumerate(query_pairs):
+                        # Map field label to name if needed (case-insensitive)
+                        field_lower = field.lower()
+                        if field_lower in field_label_to_name_map:
+                            original_field = field
+                            field = field_label_to_name_map[field_lower]
+                            logging.info(f"Mapped field label '{original_field}' to field name '{field}'")
+                        else:
+                            logging.info(f"Field '{field}' not found in label mapping, using as-is")
+                        
+                        # Determine operator based on value type
+                        if isinstance(value, list):
+                            operator = "is_in"
+                        else:
+                            operator = "is"
+                        
+                        query_hash_items.append({
+                            "condition": field,
+                            "operator": operator,
+                            "value": value
+                        })
+                
+                # Build query_hash parameters (only if we have items to process)
+                if query_hash_items:
+                    for i, query_item in enumerate(query_hash_items):
+                        condition = query_item.get("condition")
+                        operator = query_item.get("operator") 
+                        value = query_item.get("value")
+                        
+                        params[f"query_hash[{i}][condition]"] = condition
+                        params[f"query_hash[{i}][operator]"] = operator
+                        
+                        if isinstance(value, list):
+                            for val in value:
+                                key = f"query_hash[{i}][value][]"
+                                if key in params:
+                                    if not isinstance(params[key], list):
+                                        params[key] = [params[key]]
+                                    params[key].append(val)
+                                else:
+                                    params[key] = val
+                        else:
+                            params[f"query_hash[{i}][value]"] = value
                 
                 # Make API request with converted query
                 url = f"{base_url}/{project_id}/issues"
@@ -1457,9 +1681,14 @@ async def fr_filter_tasks(
                 # Convert field_params to query_hash format
                 query_hash_items = []
                 for i, (field, value) in enumerate(field_params.items()):
-                    # Map field label to name if needed
-                    if field in field_label_to_name_map:
-                        field = field_label_to_name_map[field]
+                    # Map field label to name if needed (case-insensitive)
+                    field_lower = field.lower()
+                    if field_lower in field_label_to_name_map:
+                        original_field = field
+                        field = field_label_to_name_map[field_lower]
+                        logging.info(f"Mapped field label '{original_field}' to field name '{field}'")
+                    else:
+                        logging.info(f"Field '{field}' not found in label mapping, using as-is")
                     
                     # Determine operator based on value type
                     if isinstance(value, list):
@@ -1732,7 +1961,7 @@ async def _get_testcase_fields_mapping(
                     # For other fields, use the field name as condition name
                     condition_name = field_name
                 
-                field_label_to_condition_map[field_label] = condition_name
+                field_label_to_condition_map[field_label.lower()] = condition_name
                 
                 # Identify custom fields (non-default fields)
                 if not is_default:
@@ -1823,6 +2052,8 @@ async def _resolve_testcase_field_value(
 async def fr_filter_testcases(
     project_identifier: Optional[Union[int, str]] = None,
     filter_rules: Optional[List[Dict[str, Any]]] = None,
+    query: Optional[Union[str, Dict[str, Any]]] = None,
+    query_format: str = "comma_separated",
     query_hash: Optional[List[Dict[str, Any]]] = None,
     
     # Additional API parameters
@@ -1858,6 +2089,8 @@ async def fr_filter_testcases(
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         filter_rules: List of filter rule objects with condition, operator, and value (legacy format)
+        query: Filter query in JSON string or comma-separated format (optional)
+        query_format: Format of the query - "comma_separated" or "json" (default: "comma_separated")
         query_hash: Native query_hash format for filtering (preferred) - preserves original structure including duplicates
         filter_id: Saved filter ID to apply (defaults to 1 if not provided)
         include: Fields to include in response (e.g., "custom_field")
@@ -1871,7 +2104,13 @@ async def fr_filter_testcases(
         Filtered list of test cases or error response
         
     Examples:
-        # Using native query_hash format (preferred)
+        # Using comma-separated query format (simple and intuitive)
+        fr_filter_testcases(query="Section:Authentication,Type:Functional Test,Creator:John Doe")
+        
+        # Multiple field filtering with comma-separated format
+        fr_filter_testcases(query="Severity:High,Status:Active,Creator:jane@company.com")
+        
+        # Using native query_hash format (preferred for complex queries)
         fr_filter_testcases(query_hash=[
             {"condition": "status", "operator": "is", "value": 1},
             {"condition": "creator_id", "operator": "is_in", "value": [50624]}
@@ -1940,6 +2179,83 @@ async def fr_filter_testcases(
         # Always set filter_id to 1 for test case filtering as requested
         params["filter_id"] = filter_id if filter_id else 1
 
+        # Handle comma-separated or JSON query format (only if query is provided and not empty)
+        if query and str(query).strip():
+            # Get testcase field mappings for label-to-condition translation
+            field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
+            if "error" in field_mapping_result:
+                return field_mapping_result
+                
+            field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
+            custom_fields = field_mapping_result.get("custom_fields", [])
+            
+            # Parse query based on format
+            if query_format == "json":
+                if isinstance(query, str):
+                    import json
+                    query_dict = json.loads(query)
+                else:
+                    query_dict = query
+                query_pairs = list(query_dict.items())
+            else:
+                # Comma-separated format (only process if applicable)
+                processed_query_str = process_query_with_custom_fields(query, custom_fields)
+                query_pairs = parse_query_string(processed_query_str)
+                
+                # Skip processing if no valid query pairs found
+                if not query_pairs:
+                    logging.info(f"No valid query pairs found in: '{query}' - skipping comma-separated processing")
+                    # Continue to other filtering methods
+                else:
+                    logging.info(f"Processing {len(query_pairs)} comma-separated testcase query pairs: {query_pairs}")
+            
+            # Convert query_pairs to query_hash format (only if we have valid pairs)
+            query_hash_items = []
+            if query_pairs:
+                for i, (field, value) in enumerate(query_pairs):
+                    # Map field label to condition name if needed (case-insensitive)
+                    field_lower = field.lower()
+                    if field_lower in field_label_to_condition_map:
+                        original_field = field
+                        field = field_label_to_condition_map[field_lower]
+                        logging.info(f"Mapped testcase field label '{original_field}' to condition name '{field}'")
+                    else:
+                        logging.info(f"Testcase field '{field}' not found in label mapping, using as-is")
+                    
+                    # Determine operator based on value type
+                    if isinstance(value, list):
+                        operator = "is_in"
+                    else:
+                        operator = "is"
+                    
+                    query_hash_items.append({
+                        "condition": field,
+                        "operator": operator,
+                        "value": value
+                    })
+            
+            # Build query_hash parameters (only if we have items to process)
+            if query_hash_items:
+                for i, query_item in enumerate(query_hash_items):
+                    condition = query_item.get("condition")
+                    operator = query_item.get("operator")
+                    value = query_item.get("value")
+                    
+                    if condition and operator and value is not None:
+                        params[f"query_hash[{i}][condition]"] = condition
+                        params[f"query_hash[{i}][operator]"] = operator
+                        
+                        # Resolve values to IDs if needed
+                        final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                        
+                        # Handle array values using helper function
+                        _add_query_hash_value(params, i, final_value)
+                
+                # Make API request with converted query
+                url = f"{base_url}/{project_id}/test_cases"
+                result = await make_api_request("GET", url, headers, params=params, client=client)
+                return result
+
         # Handle native query_hash format (highest priority)
         if query_hash:
             # Process query_hash entries as-is, preserving original structure including duplicates
@@ -1977,15 +2293,18 @@ async def fr_filter_testcases(
         field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
 
         # Convert filter_rules to query_hash format
-        for i, rule in enumerate(filter_rules):
-            if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                condition = rule["condition"]
-                operator = rule["operator"]
-                value = rule["value"]
-                
-                # Map field label to condition name if needed
-                if condition in field_label_to_condition_map:
-                    condition = field_label_to_condition_map[condition]
+            for i, rule in enumerate(filter_rules):
+                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                    condition = rule["condition"]
+                    operator = rule["operator"]
+                    value = rule["value"]
+                    
+                # Map field label to condition name if needed (case-insensitive)
+                condition_lower = condition.lower()
+                if condition_lower in field_label_to_condition_map:
+                    original_condition = condition
+                    condition = field_label_to_condition_map[condition_lower]
+                    logging.info(f"Mapped testcase filter_rules condition '{original_condition}' to '{condition}'")
                 
                 params[f"query_hash[{i}][condition]"] = condition
                 params[f"query_hash[{i}][operator]"] = operator
@@ -2528,6 +2847,58 @@ async def _resolve_user_name_to_id(
         raise ValueError(f"Failed to resolve user '{user_identifier}': {str(e)}")
 
 
+async def _resolve_issue_key_to_id(
+    issue_key: str,
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str]
+) -> int:
+    """Resolve issue key (e.g., 'FS-123456') to issue ID.
+    
+    Args:
+        issue_key: Issue key to resolve (e.g., 'FS-123456')
+        project_id: Project ID
+        client: HTTP client instance
+        base_url: Base API URL
+        headers: Request headers
+        
+    Returns:
+        Issue ID as integer
+    """
+    try:
+        # If it's already a numeric ID, return as integer
+        if isinstance(issue_key, int) or issue_key.isdigit():
+            return int(issue_key)
+        
+        # Try to get the issue by key
+        url = f"{base_url}/{project_id}/issues/{issue_key}"
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        
+        issue_data = response.json()
+        
+        # Handle both direct issue response and nested issue response
+        if isinstance(issue_data, dict):
+            if "issue" in issue_data:
+                issue = issue_data["issue"]
+            else:
+                issue = issue_data
+            
+            issue_id = issue.get("id")
+            if issue_id:
+                return int(issue_id)
+        
+        raise ValueError(f"Could not find issue ID for key: {issue_key}")
+        
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise ValueError(f"Issue not found: {issue_key}")
+        raise ValueError(f"Failed to resolve issue key {issue_key}: HTTP {e.response.status_code}")
+    except Exception as e:
+        raise ValueError(f"Failed to resolve issue key {issue_key}: {str(e)}")
+
+
 async def _resolve_subproject_name_to_id(
     sub_project_name: str,
     project_id: Union[int, str]
@@ -2609,6 +2980,8 @@ async def _resolve_query_fields(
         "sprint_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sprints"),
         "release_id": lambda value: _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "releases"),
         "sub_project_id": lambda value: _resolve_subproject_name_to_id(value, project_id),
+        "parent_id": lambda value: _resolve_issue_key_to_id(value, project_id, client, base_url, headers),
+        "epic_id": lambda value: _resolve_issue_key_to_id(value, project_id, client, base_url, headers),
     }
     
     for field_name, value in mapped_query_pairs:
