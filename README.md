@@ -30,7 +30,6 @@ An MCP server that enables AI models to interact with Freshrelease through power
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
 | `fr_get_project` | Get project details | `project_identifier` |
-| `fr_create_task` | Create new tasks/issues | `title`, `project_identifier`, `issue_type_name`, `user` |  
 | `fr_get_task` | Get task by ID/key | `project_identifier`, `key` |
 | `fr_get_all_tasks` | List all project tasks | `project_identifier` |
 | `fr_get_issue_type_by_name` | Resolve issue type names | `issue_type_name` |
@@ -52,7 +51,6 @@ An MCP server that enables AI models to interact with Freshrelease through power
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
 | `fr_filter_tasks` | Advanced task filtering with native query_hash | `query_hash`, `filter_id`, `include`, pagination |
-| `fr_save_filter` | Save reusable filters | `label`, `query_hash` |
 | `fr_get_issue_form_fields` | Get issue form schema | `issue_type_id` |
 | `fr_get_testcase_form_fields` | Get test form schema | - |
 | `fr_get_all_issue_type_form_fields` | Get all form schemas | - |
@@ -118,18 +116,12 @@ Add to `~/.cursor/mcp.json`:
 
 ## 💡 Usage Examples
 
-### 🎯 Create & Manage Tasks
-**Ask AI to create a bug report:**
-> "Create a bug ticket titled 'Fix login issue' in the FS project, assign it to john@example.com, and set the status to In Progress"
-
-The AI will automatically:
-- Find your FS project
-- Convert "john@example.com" to the correct user ID
-- Set the issue type as "Bug"
-- Resolve "In Progress" to the proper status ID
-
+### 🎯 Task Management
 **Get project overview:**
 > "Show me all tasks in the FS project"
+
+**Get specific task details:**
+> "Get details for task FS-123"
 
 ### 📋 Advanced Task Filtering  
 **Use natural language filtering:**
@@ -139,7 +131,7 @@ The AI understands both:
 - **Friendly labels**: "Owner", "Status", "Priority" 
 - **Technical names**: "owner_id", "status_id", "priority_id"
 
-**Native Freshrelease filtering:**
+**Native Freshrelease filtering with existing filters:**
 > "Filter tasks using saved filter ID 102776 with custom fields and date ranges"
 
 **Sprint and date-based filtering:**

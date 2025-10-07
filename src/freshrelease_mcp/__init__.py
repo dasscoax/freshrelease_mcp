@@ -1,5 +1,5 @@
 from .server import main
 
-__version__ = "1.7.8"
+__version__ = "1.8.3"
 __all__ = ["main"]
 

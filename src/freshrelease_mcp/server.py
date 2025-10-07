@@ -385,7 +385,6 @@ async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -
         return create_error_response(f"Failed to get project: {str(e)}")
 
 
-@mcp.tool()
 @performance_monitor("fr_create_task")
 async def fr_create_task(
     title: str,
@@ -1624,7 +1623,6 @@ async def fr_clear_resolution_cache() -> Any:
         return create_error_response(f"Failed to clear resolution cache: {str(e)}")
 
 
-@mcp.tool()
 @performance_monitor("fr_save_filter")
 async def fr_save_filter(
     label: str,
@@ -1756,79 +1754,220 @@ async def _get_testcase_fields_mapping(
         return {"error": f"Failed to get testcase fields mapping: {str(e)}"}
 
 
+def _add_query_hash_value(params: Dict[str, Any], index: int, value: Any) -> None:
+    """Helper function to add query_hash values, handling both single and array values.
+    
+    Args:
+        params: Parameters dictionary to update
+        index: Query hash index 
+        value: Value to add (can be single value or array)
+    """
+    if isinstance(value, list):
+        # For arrays, use query_hash[i][value][] format and store as list
+        key = f"query_hash[{index}][value][]"
+        params[key] = value
+    else:
+        # For single values, use query_hash[i][value] format
+        params[f"query_hash[{index}][value]"] = value
+
+
+async def _resolve_testcase_field_value(
+    condition: str, 
+    value: Any, 
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str]
+) -> Any:
+    """Resolve testcase field values to IDs if needed.
+    
+    Args:
+        condition: The field condition (e.g., "creator_id", "section_id")
+        value: The value to resolve
+        project_id: Resolved project ID
+        client: HTTP client instance
+        base_url: API base URL
+        headers: Request headers
+        
+    Returns:
+        Resolved value or original value if no resolution needed
+    """
+    try:
+        # Fields that need resolution
+        if condition == "creator_id" and isinstance(value, str) and not value.isdigit():
+            # Resolve user name/email to ID
+            user_result = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
+            if user_result and isinstance(user_result, int):
+                return user_result
+        elif condition == "section_id" and isinstance(value, str) and not value.isdigit():
+            # Resolve section name to ID
+            section_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
+            if section_result and isinstance(section_result, (int, dict)):
+                return section_result.get("id", section_result) if isinstance(section_result, dict) else section_result
+        elif condition == "test_case_type_id" and isinstance(value, str) and not value.isdigit():
+            # Resolve test case type name to ID
+            type_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "test_case_types")
+            if type_result and isinstance(type_result, (int, dict)):
+                return type_result.get("id", type_result) if isinstance(type_result, dict) else type_result
+        
+        # Return original value if no resolution needed
+        return value
+        
+    except Exception:
+        # Return original value if resolution fails
+        return value
+
+
 @mcp.tool()
 @performance_monitor("fr_filter_testcases")
 async def fr_filter_testcases(
     project_identifier: Optional[Union[int, str]] = None,
-    filter_rules: Optional[List[Dict[str, Any]]] = None
+    filter_rules: Optional[List[Dict[str, Any]]] = None,
+    query_hash: Optional[List[Dict[str, Any]]] = None,
+    
+    # Additional API parameters
+    filter_id: Optional[Union[int, str]] = None,
+    include: Optional[str] = None,
+    page: Optional[int] = 1,
+    per_page: Optional[int] = 30,
+    sort: Optional[str] = None,
+    sort_type: Optional[str] = None,
+    test_run_id: Optional[Union[int, str]] = None
 ) -> Any:
     """Filter test cases using filter rules with automatic label-to-condition and name-to-ID resolution.
     
     This tool allows you to filter test cases by various criteria using either user-friendly field labels 
-    or internal condition names. It supports both approaches for maximum flexibility:
+    or internal condition names. Supports native query_hash format for optimal performance.
     
-    Field Label Support (NEW):
+    Field Label Support:
     - "Pre-requisite": Maps to pre_requisite condition  
     - "Steps to Execute": Maps to steps condition
     - "Expected Results": Maps to expected_results condition
     - "Severity": Maps to severity_id condition
     - "Section": Maps to section_id condition
-    - "Type": Maps to type_id condition
-    - "Linked Tasks": Maps to issue_ids condition
+    - "Type": Maps to test_case_type_id condition
+    - "Creator": Maps to creator_id condition
+    - "Status": Maps to test_case_status_id condition
     
     Automatic Name-to-ID Resolution:
     - section_id: Resolves section names to IDs
-    - type_id: Resolves test case type names to IDs
-    - issue_ids: Resolves issue keys to IDs
-    - tags: Resolves tag names to IDs
+    - test_case_type_id: Resolves test case type names to IDs
+    - creator_id: Resolves user names/emails to IDs
     - Custom fields: Resolves custom field values to IDs
-    
-    Use fr_get_testcase_form_fields to get available fields and their possible values for filtering.
     
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
-        filter_rules: List of filter rule objects with condition, operator, and value
-                     Example: [{"condition": "Section", "operator": "is", "value": "Authentication"}]
+        filter_rules: List of filter rule objects with condition, operator, and value (legacy format)
+        query_hash: Native query_hash format for filtering (preferred) - preserves original structure including duplicates
+        filter_id: Saved filter ID to apply (defaults to 1 if not provided)
+        include: Fields to include in response (e.g., "custom_field")
+        page: Page number for pagination (default: 1)
+        per_page: Number of items per page (default: 30)
+        sort: Field to sort by (e.g., "created_at", "updated_at", "id")
+        sort_type: Sort direction ("asc" or "desc")
+        test_run_id: Test run ID for filtering test cases within a specific test run
     
     Returns:
         Filtered list of test cases or error response
         
     Examples:
-        # NEW: Filter using user-friendly field labels
-        test_cases = fr_filter_testcases(
-            filter_rules=[
-                {"condition": "Section", "operator": "is", "value": "Authentication"},
-                {"condition": "Type", "operator": "is", "value": "Functional Test"},
-                {"condition": "Severity", "operator": "is_in", "value": ["High", "Medium"]},
-                {"condition": "Linked Tasks", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}
-            ]
+        # Using native query_hash format (preferred)
+        fr_filter_testcases(query_hash=[
+            {"condition": "status", "operator": "is", "value": 1},
+            {"condition": "creator_id", "operator": "is_in", "value": [50624]}
+        ])
+        
+        # Using filter_rules (legacy, auto-converted to query_hash)
+        fr_filter_testcases(filter_rules=[
+            {"condition": "Section", "operator": "is", "value": "Authentication"},
+            {"condition": "Type", "operator": "is", "value": "Functional Test"},
+            {"condition": "Creator", "operator": "is", "value": "John Doe"}
+        ])
+        
+        # With pagination, sorting, and test run filtering
+        fr_filter_testcases(
+            query_hash=[{"condition": "creator_id", "operator": "is", "value": 50624}],
+            include="custom_field",
+            page=1,
+            per_page=15,
+            sort="id",
+            sort_type="asc",
+            test_run_id=154125
         )
         
-        # LEGACY: Filter using internal condition names (still supported for backward compatibility)
-        test_cases = fr_filter_testcases(
-            filter_rules=[
-                {"condition": "section_id", "operator": "is", "value": "Authentication"},
-                {"condition": "type_id", "operator": "is", "value": "Functional Test"},
-                {"condition": "severity_id", "operator": "is_in", "value": ["High", "Medium"]},
-                {"condition": "issue_ids", "operator": "is_in", "value": ["PROJ-123", "PROJ-456"]}
-            ]
+        # Complex filtering with duplicates, arrays, and test run
+        fr_filter_testcases(
+            query_hash=[
+                {"condition": "severity_id", "operator": "is_in", "value": [17, 16, 15]},
+                {"condition": "creator_id", "operator": "is_in", "value": [50624]},
+                {"condition": "source_of_creation", "operator": "is_in", "value": [0]},
+                {"condition": "section_id", "operator": "is", "value": 59866}
+            ],
+            page=1,
+            per_page=15,
+            sort="id",
+            sort_type="asc",
+            test_run_id=154125
         )
-        
-        # Mixed approach: Use both labels and condition names
-        test_cases = fr_filter_testcases(
-            filter_rules=[
-                {"condition": "type_id", "operator": "is", "value": "Smoke Test"},
-                {"condition": "tags", "operator": "is_in", "value": ["regression"]}
-            ]
-        )
+        # Results in: query_hash[0] through query_hash[3] with proper array formatting
     """
     try:
-        # Validate environment variables
+        # Validate environment variables and initialize API objects once
         env_data = validate_environment()
         project_id = get_project_identifier(project_identifier)
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         client = get_http_client()
+
+        # Build base parameters
+        params = {}
+        
+        # Add pagination and sorting parameters
+        if page:
+            params["page"] = page
+        if per_page:
+            params["per_page"] = per_page
+        if sort:
+            params["sort"] = sort
+        if sort_type:
+            params["sort_type"] = sort_type
+        # Only add include parameter if explicitly provided (not None and not empty)
+        if include is not None and include.strip():
+            params["include"] = include
+        if test_run_id:
+            params["test_run_id"] = test_run_id
+        
+        # Always set filter_id to 1 for test case filtering as requested
+        params["filter_id"] = filter_id if filter_id else 1
+
+        # Handle native query_hash format (highest priority)
+        if query_hash:
+            # Process query_hash entries as-is, preserving original structure including duplicates
+            for i, query_item in enumerate(query_hash):
+                condition = query_item.get("condition")
+                operator = query_item.get("operator")
+                value = query_item.get("value")
+                
+                if condition and operator and value is not None:
+                    params[f"query_hash[{i}][condition]"] = condition
+                    params[f"query_hash[{i}][operator]"] = operator
+                    
+                    # Resolve values to IDs if needed
+                    final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                    
+                    # Handle array values using helper function
+                    _add_query_hash_value(params, i, final_value)
+            
+            # Make API request with query_hash
+            url = f"{base_url}/{project_id}/test_cases"
+            result = await make_api_request("GET", url, headers, params=params, client=client)
+            return result
+
+        # Handle legacy filter_rules format (convert to query_hash)
+        if not filter_rules:
+            # No filtering criteria provided, return all test cases with pagination/sorting
+            url = f"{base_url}/{project_id}/test_cases"
+            return await make_api_request("GET", url, headers, params=params, client=client)
 
         # Get testcase field mappings for label-to-condition translation
         field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
@@ -1836,159 +1975,31 @@ async def fr_filter_testcases(
             return field_mapping_result
             
         field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
-        custom_fields = field_mapping_result.get("custom_fields", [])
 
-        # Apply label-to-condition mapping to filter rules
-        if filter_rules:
-            for rule in filter_rules:
-                if isinstance(rule, dict) and "condition" in rule:
-                    condition = rule["condition"]
-                    # Check if condition is a label that needs to be mapped to condition name
-                    if condition in field_label_to_condition_map:
-                        rule["condition"] = field_label_to_condition_map[condition]
+        # Convert filter_rules to query_hash format
+        for i, rule in enumerate(filter_rules):
+            if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                condition = rule["condition"]
+                operator = rule["operator"]
+                value = rule["value"]
+                
+                # Map field label to condition name if needed
+                if condition in field_label_to_condition_map:
+                    condition = field_label_to_condition_map[condition]
+                
+                params[f"query_hash[{i}][condition]"] = condition
+                params[f"query_hash[{i}][operator]"] = operator
+                
+                # Resolve values to IDs if needed
+                final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                
+                # Handle array values using helper function
+                _add_query_hash_value(params, i, final_value)
 
-        # Process and resolve filter rules with optimized batch resolution
-        resolved_rules = []
-        if filter_rules:
-            # Group resolution tasks by type for batch processing
-            resolution_tasks = {
-                "section": [],
-                "type": [],
-                "issue": [],
-                "tag": [],
-                "custom": []
-            }
-            
-            # Collect all resolution tasks
-            for i, rule in enumerate(filter_rules):
-                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                    condition = rule["condition"]
-                    value = rule["value"]
-                    
-                    if condition == "section_id" and isinstance(value, str):
-                        resolution_tasks["section"].append((i, value))
-                    elif condition == "type_id" and isinstance(value, str):
-                        resolution_tasks["type"].append((i, value))
-                    elif condition == "issue_ids" and isinstance(value, (list, str)):
-                        if isinstance(value, str):
-                            value = [value]
-                        for issue_key in value:
-                            resolution_tasks["issue"].append((i, issue_key))
-                    elif condition == "tags" and isinstance(value, (list, str)):
-                        if isinstance(value, str):
-                            value = [value]
-                        for tag_name in value:
-                            resolution_tasks["tag"].append((i, tag_name))
-                    elif condition.startswith("cf_") and isinstance(value, (list, str)):
-                        field_name = condition[3:]
-                        if isinstance(value, str):
-                            value = [value]
-                        for field_value in value:
-                            resolution_tasks["custom"].append((i, field_name, field_value))
-            
-            # Batch resolve all tasks
-            resolution_results = {}
-            
-            # Resolve sections
-            if resolution_tasks["section"]:
-                section_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "sections")
-                    for _, name in resolution_tasks["section"]
-                ], return_exceptions=True)
-                for (rule_idx, name), result in zip(resolution_tasks["section"], section_resolutions):
-                    if rule_idx not in resolution_results:
-                        resolution_results[rule_idx] = {}
-                    resolution_results[rule_idx]["section_id"] = result if not isinstance(result, Exception) else None
-            
-            # Resolve types
-            if resolution_tasks["type"]:
-                type_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(name, project_id, client, base_url, headers, "issue_types")
-                    for _, name in resolution_tasks["type"]
-                ], return_exceptions=True)
-                for (rule_idx, name), result in zip(resolution_tasks["type"], type_resolutions):
-                    if rule_idx not in resolution_results:
-                        resolution_results[rule_idx] = {}
-                    resolution_results[rule_idx]["type_id"] = result if not isinstance(result, Exception) else None
-            
-            # Resolve issues
-            if resolution_tasks["issue"]:
-                issue_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(issue_key, project_id, client, base_url, headers, "issues")
-                    for _, issue_key in resolution_tasks["issue"]
-                ], return_exceptions=True)
-                for (rule_idx, issue_key), result in zip(resolution_tasks["issue"], issue_resolutions):
-                    if rule_idx not in resolution_results:
-                        resolution_results[rule_idx] = {}
-                    if "issue_ids" not in resolution_results[rule_idx]:
-                        resolution_results[rule_idx]["issue_ids"] = []
-                    resolution_results[rule_idx]["issue_ids"].append(result if not isinstance(result, Exception) else issue_key)
-            
-            # Resolve tags
-            if resolution_tasks["tag"]:
-                tag_resolutions = await asyncio.gather(*[
-                    _resolve_name_to_id_generic(tag_name, project_id, client, base_url, headers, "tags")
-                    for _, tag_name in resolution_tasks["tag"]
-                ], return_exceptions=True)
-                for (rule_idx, tag_name), result in zip(resolution_tasks["tag"], tag_resolutions):
-                    if rule_idx not in resolution_results:
-                        resolution_results[rule_idx] = {}
-                    if "tags" not in resolution_results[rule_idx]:
-                        resolution_results[rule_idx]["tags"] = []
-                    resolution_results[rule_idx]["tags"].append(result if not isinstance(result, Exception) else tag_name)
-            
-            # Resolve custom fields
-            if resolution_tasks["custom"]:
-                custom_resolutions = await asyncio.gather(*[
-                    _resolve_custom_field_value_optimized(field_name, field_value, project_id, client, base_url, headers)
-                    for _, field_name, field_value in resolution_tasks["custom"]
-                ], return_exceptions=True)
-                for (rule_idx, field_name, field_value), result in zip(resolution_tasks["custom"], custom_resolutions):
-                    if rule_idx not in resolution_results:
-                        resolution_results[rule_idx] = {}
-                    if f"cf_{field_name}" not in resolution_results[rule_idx]:
-                        resolution_results[rule_idx][f"cf_{field_name}"] = []
-                    resolution_results[rule_idx][f"cf_{field_name}"].append(result if not isinstance(result, Exception) else field_value)
-            
-            # Build resolved rules
-            for i, rule in enumerate(filter_rules):
-                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                    condition = rule["condition"]
-                    operator = rule["operator"]
-                    value = rule["value"]
-                    
-                    # Apply resolved values
-                    if condition == "section_id" and i in resolution_results and "section_id" in resolution_results[i]:
-                        resolved_id = resolution_results[i]["section_id"]
-                        if resolved_id:
-                            value = resolved_id
-                    elif condition == "type_id" and i in resolution_results and "type_id" in resolution_results[i]:
-                        resolved_id = resolution_results[i]["type_id"]
-                        if resolved_id:
-                            value = resolved_id
-                    elif condition == "issue_ids" and i in resolution_results and "issue_ids" in resolution_results[i]:
-                        value = resolution_results[i]["issue_ids"]
-                    elif condition == "tags" and i in resolution_results and "tags" in resolution_results[i]:
-                        value = resolution_results[i]["tags"]
-                    elif condition.startswith("cf_") and i in resolution_results and condition in resolution_results[i]:
-                        value = resolution_results[i][condition]
-                    
-                    resolved_rules.append({
-                        "condition": condition,
-                        "operator": operator,
-                        "value": value
-                    })
-
-        # Build filter_rule query parameters
-        params = {}
-        for i, rule in enumerate(resolved_rules):
-            params[f"filter_rule[{i}][condition]"] = rule["condition"]
-            params[f"filter_rule[{i}][operator]"] = rule["operator"]
-            params[f"filter_rule[{i}][value]"] = rule["value"]
-
-        # Get filtered test cases
+        # Make the API request
         url = f"{base_url}/{project_id}/test_cases"
-        return await make_api_request("GET", url, headers, params=params, client=client)
+        result = await make_api_request("GET", url, headers, params=params, client=client)
+        return result
 
     except Exception as e:
         return create_error_response(f"Failed to filter test cases: {str(e)}")
