@@ -1,6 +1,6 @@
 [project]
 name = "freshrelease-mcp"
-version = "1.9.0"
+version = "1.9.1"
 description = "An MCP server for Freshrelease - enables Cursor AI to interact with Freshrelease projects"
 readme = "README.md"
 requires-python = ">=3.10"
