@@ -2807,7 +2807,9 @@ async def _resolve_testcase_field_value(
     project_id: Union[int, str],
     client: httpx.AsyncClient,
     base_url: str,
-    headers: Dict[str, str]
+    headers: Dict[str, str],
+    severity_options: Optional[Dict[str, int]] = None,
+    section_options: Optional[Dict[str, int]] = None
 ) -> Any:
     """Resolve testcase field values to IDs if needed.
     
@@ -2818,6 +2820,8 @@ async def _resolve_testcase_field_value(
         client: HTTP client instance
         base_url: API base URL
         headers: Request headers
+        severity_options: Optional mapping of severity names to IDs from form fields
+        section_options: Optional mapping of section names to IDs from form fields
         
     Returns:
         Resolved value or original value if no resolution needed
@@ -2826,24 +2830,42 @@ async def _resolve_testcase_field_value(
         # Fields that need resolution
         if condition == "creator_id" and isinstance(value, str) and not value.isdigit():
             # Resolve user name/email to ID
+            logging.info(f"Resolving creator '{value}' to user ID")
             user_result = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
             if user_result and isinstance(user_result, int):
+                logging.info(f"Resolved creator '{value}' to ID {user_result}")
                 return user_result
+        elif condition == "severity_id" and isinstance(value, str) and severity_options and value.lower() in severity_options:
+            # Use explicit severity mapping from form fields (preferred method)
+            resolved_id = severity_options[value.lower()]
+            logging.info(f"Resolved severity '{value}' to ID {resolved_id} using form fields")
+            return resolved_id
         elif condition == "section_id" and isinstance(value, str) and not value.isdigit():
-            # Resolve section name to ID
-            section_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
-            if section_result and isinstance(section_result, (int, dict)):
-                return section_result.get("id", section_result) if isinstance(section_result, dict) else section_result
+            # First try explicit section options if available, then fall back to generic resolution
+            if section_options and value.lower() in section_options:
+                resolved_id = section_options[value.lower()]
+                logging.info(f"Resolved section '{value}' to ID {resolved_id} using form fields")
+                return resolved_id
+            else:
+                # Fall back to generic section resolution
+                section_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
+                if section_result and isinstance(section_result, (int, dict)):
+                    resolved_id = section_result.get("id", section_result) if isinstance(section_result, dict) else section_result
+                    logging.info(f"Resolved section '{value}' to ID {resolved_id} using generic resolution")
+                    return resolved_id
         elif condition == "test_case_type_id" and isinstance(value, str) and not value.isdigit():
             # Resolve test case type name to ID
             type_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "test_case_types")
             if type_result and isinstance(type_result, (int, dict)):
-                return type_result.get("id", type_result) if isinstance(type_result, dict) else type_result
+                resolved_id = type_result.get("id", type_result) if isinstance(type_result, dict) else type_result
+                logging.info(f"Resolved test case type '{value}' to ID {resolved_id}")
+                return resolved_id
         
         # Return original value if no resolution needed
         return value
         
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Failed to resolve testcase field '{condition}' value '{value}': {str(e)}")
         # Return original value if resolution fails
         return value
 
@@ -2934,6 +2956,62 @@ async def fr_testcase_filter_summary(
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         client = get_http_client()
+        
+        logging.info("=== Starting testcase filter summary with explicit field mapping ===")
+        
+        # Step 1: Get testcase form fields to understand field name-to-ID mappings
+        logging.info("Step 1: Getting testcase form fields for field mapping")
+        form_fields_result = await fr_get_testcase_form_fields(project_identifier)
+        if "error" in form_fields_result:
+            return form_fields_result
+            
+        # Extract field mappings from form fields
+        form_data = form_fields_result.get("form", {})
+        fields_list = form_data.get("fields", [])
+        
+        # Build comprehensive field mappings
+        field_label_to_condition_map = {}
+        field_name_to_id_map = {}
+        severity_options = {}
+        section_options = {}
+        creator_options = {}
+        
+        logging.info(f"Found {len(fields_list)} testcase form fields")
+        
+        for field in fields_list:
+            field_name = field.get("name", "")
+            field_label = field.get("label", "")
+            field_choices = field.get("choices", [])
+            
+            if field_label and field_name:
+                # Map field labels to their condition names for filtering
+                if field_name == "severity":
+                    condition_name = "severity_id"
+                    # Extract severity options for name-to-ID resolution
+                    for choice in field_choices:
+                        severity_options[choice.get("label", "").lower()] = choice.get("id")
+                elif field_name == "section":
+                    condition_name = "section_id"
+                    # Extract section options for name-to-ID resolution
+                    for choice in field_choices:
+                        section_options[choice.get("label", "").lower()] = choice.get("id")
+                elif field_name == "test_case_type":
+                    condition_name = "test_case_type_id"
+                elif field_name == "test_case_status":
+                    condition_name = "test_case_status_id"
+                elif field_name == "creator":
+                    condition_name = "creator_id"
+                else:
+                    condition_name = field_name
+                
+                field_label_to_condition_map[field_label.lower()] = condition_name
+                field_name_to_id_map[field_name] = condition_name
+                
+                logging.info(f"Mapped field '{field_label}' -> '{condition_name}'")
+        
+        # Step 2: Build comprehensive user mapping for creator_id resolution
+        logging.info("Step 2: Preparing user resolution for creator_id fields")
+        
 
         # Build base parameters
         params = {}
@@ -2958,13 +3036,18 @@ async def fr_testcase_filter_summary(
 
         # Handle comma-separated or JSON query format (only if query is provided and not empty)
         if query and str(query).strip():
-            # Get testcase field mappings for label-to-condition translation
-            field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
-            if "error" in field_mapping_result:
-                return field_mapping_result
-                
-            field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
-            custom_fields = field_mapping_result.get("custom_fields", [])
+            logging.info("Step 3: Processing query using form field mappings")
+            
+            # Build custom fields list for processing
+            custom_fields = []
+            for field in fields_list:
+                if not field.get("default", False):  # Non-default fields are custom
+                    custom_fields.append({
+                        "name": field.get("name", ""),
+                        "label": field.get("label", ""),
+                        "type": field.get("type", ""),
+                        "condition": field_name_to_id_map.get(field.get("name", ""), field.get("name", ""))
+                    })
             
             # Parse query based on format
             if query_format == "json":
@@ -3022,8 +3105,11 @@ async def fr_testcase_filter_summary(
                         params[f"query_hash[{i}][condition]"] = condition
                         params[f"query_hash[{i}][operator]"] = operator
                         
-                        # Resolve values to IDs if needed
-                        final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                        # Step 4: Resolve values to IDs using enhanced field mappings
+                        final_value = await _resolve_testcase_field_value(
+                            condition, value, project_id, client, base_url, headers,
+                            severity_options, section_options
+                        )
                         
                         # Handle array values using helper function
                         _add_query_hash_value(params, i, final_value)
@@ -3053,8 +3139,11 @@ async def fr_testcase_filter_summary(
                     params[f"query_hash[{i}][condition]"] = condition
                     params[f"query_hash[{i}][operator]"] = operator
                     
-                    # Resolve values to IDs if needed
-                    final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                    # Resolve values to IDs using enhanced field mappings
+                    final_value = await _resolve_testcase_field_value(
+                        condition, value, project_id, client, base_url, headers,
+                        severity_options, section_options
+                    )
                     
                     # Handle array values using helper function
                     _add_query_hash_value(params, i, final_value)
@@ -3085,14 +3174,8 @@ async def fr_testcase_filter_summary(
             }
             return _add_ai_summary_to_testcase_result(result, filter_criteria)
 
-        # Get testcase field mappings for label-to-condition translation
-        field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
-        if "error" in field_mapping_result:
-            return field_mapping_result
-            
-        field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
-
-        # Convert filter_rules to query_hash format
+        # Convert filter_rules to query_hash format using explicit field mappings
+        logging.info("Step 5: Processing filter_rules using explicit field mappings")
         for i, rule in enumerate(filter_rules):
             if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
                 condition = rule["condition"]
@@ -3109,13 +3192,17 @@ async def fr_testcase_filter_summary(
                 params[f"query_hash[{i}][condition]"] = condition
                 params[f"query_hash[{i}][operator]"] = operator
                 
-                # Resolve values to IDs if needed
-                final_value = await _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers)
+                # Resolve values to IDs using enhanced field mappings
+                final_value = await _resolve_testcase_field_value(
+                    condition, value, project_id, client, base_url, headers,
+                    severity_options, section_options
+                )
                 
                 # Handle array values using helper function
                 _add_query_hash_value(params, i, final_value)
 
-        # Make the API request
+        # Step 6: Make the testcase filter API request
+        logging.info("Step 6: Making API request to fetch filtered testcases")
         url = f"{base_url}/{project_id}/test_cases"
         result = await make_api_request("GET", url, headers, params=params, client=client)
         

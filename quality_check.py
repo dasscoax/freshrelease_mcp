@@ -48,6 +48,7 @@ class CodeQualityChecker:
             self._check_function_docstrings(lines)
             self._check_error_handling(lines)
             self._check_async_patterns(lines)
+            self._check_redundant_code(lines)
             
         except Exception as e:
             self.issues.append({
@@ -211,6 +212,101 @@ class CodeQualityChecker:
                             "message": f"Possible missing 'await' for async function: {pattern}",
                             "severity": "warning"
                         })
+    
+    def _check_redundant_code(self, lines: List[str]) -> None:
+        """Check for potentially redundant code patterns."""
+        function_signatures = {}
+        similar_conditionals = {}
+        
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            
+            # Skip comments and empty lines
+            if not stripped or stripped.startswith('#'):
+                continue
+            
+            # Check for similar function signatures (potential duplicates)
+            if stripped.startswith('async def ') or stripped.startswith('def '):
+                # Extract function name and basic signature
+                func_part = stripped.split('(')[0]
+                func_name = func_part.split()[-1]
+                
+                # Look for similar function names (potential redundancy indicators)
+                for existing_func, existing_line in function_signatures.items():
+                    # Check for similar names that might indicate redundancy
+                    if (func_name != existing_func and 
+                        (func_name in existing_func or existing_func in func_name or
+                         self._are_similar_names(func_name, existing_func))):
+                        self.issues.append({
+                            "type": "redundant_code",
+                            "line": i,
+                            "message": f"Similar function name '{func_name}' found - check if redundant with '{existing_func}' (line {existing_line})",
+                            "severity": "warning"
+                        })
+                
+                function_signatures[func_name] = i
+            
+            # Check for similar conditional patterns (if/elif chains)
+            if stripped.startswith('if ') or stripped.startswith('elif '):
+                # Extract condition pattern (basic heuristic)
+                condition_pattern = self._extract_condition_pattern(stripped)
+                if condition_pattern:
+                    if condition_pattern in similar_conditionals:
+                        similar_conditionals[condition_pattern].append(i)
+                        # Flag if we see the same pattern more than twice
+                        if len(similar_conditionals[condition_pattern]) > 2:
+                            first_line = similar_conditionals[condition_pattern][0]
+                            self.issues.append({
+                                "type": "redundant_code",
+                                "line": i,
+                                "message": f"Repeated conditional pattern '{condition_pattern}' - consider extracting to helper method (also at lines {first_line}, etc.)",
+                                "severity": "warning"
+                            })
+                    else:
+                        similar_conditionals[condition_pattern] = [i]
+            
+            # Check for obvious code duplication patterns
+            if 'resolve' in stripped.lower() and ('field' in stripped.lower() or 'value' in stripped.lower()):
+                # This is specific to our recent issue - look for field resolution patterns
+                if any(word in stripped.lower() for word in ['creator_id', 'section_id', 'severity_id']):
+                    # Check if we're in a function that might be duplicate resolution logic
+                    self.issues.append({
+                        "type": "redundant_code",
+                        "line": i,
+                        "message": "Field resolution logic detected - verify not duplicating existing _resolve_testcase_field_value functionality",
+                        "severity": "warning"
+                    })
+    
+    def _are_similar_names(self, name1: str, name2: str) -> bool:
+        """Check if two function names are similar enough to potentially be redundant."""
+        # Remove common prefixes/suffixes
+        common_patterns = ['resolve_', '_resolve', '_field', '_value', '_explicit', '_generic']
+        
+        clean_name1 = name1
+        clean_name2 = name2
+        
+        for pattern in common_patterns:
+            clean_name1 = clean_name1.replace(pattern, '')
+            clean_name2 = clean_name2.replace(pattern, '')
+        
+        # If cleaned names are similar or one contains the other
+        return (clean_name1 in clean_name2 or clean_name2 in clean_name1) and clean_name1 != clean_name2
+    
+    def _extract_condition_pattern(self, line: str) -> str:
+        """Extract a pattern from a conditional statement for similarity checking."""
+        # Simple pattern extraction - look for common conditional structures
+        line_lower = line.lower().strip()
+        
+        if 'condition ==' in line_lower:
+            return 'condition_equality_check'
+        elif 'isinstance(' in line_lower:
+            return 'isinstance_check'
+        elif 'value' in line_lower and 'str' in line_lower:
+            return 'string_value_check'
+        elif '.lower()' in line_lower and 'in' in line_lower:
+            return 'lowercase_membership_check'
+        
+        return None
     
     def generate_report(self) -> str:
         """Generate a formatted report of all issues."""

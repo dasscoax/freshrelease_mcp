@@ -397,30 +397,131 @@ def process_testcases_with_summary(result):
     return _add_ai_summary_to_result(result, "test_cases", _generate_testcase_insights)
 ```
 
+### **❌ Avoiding Redundant Code and Duplicate Methods**
+
+**Rule:** Always check if functionality already exists before creating new methods. Enhance existing methods rather than duplicating functionality.
+
+#### **❌ Bad Example: Creating Duplicate Methods**
+```python
+# EXISTING METHOD (already handles field resolution)
+async def _resolve_testcase_field_value(condition, value, project_id, client, base_url, headers):
+    """Existing method that resolves testcase field values."""
+    if condition == "creator_id":
+        return await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
+    elif condition == "section_id":
+        return await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
+    # ... existing logic
+
+# BAD - Creating a duplicate method with similar functionality
+async def resolve_testcase_field_explicit(condition, value):
+    """REDUNDANT - Duplicates existing functionality!"""
+    if condition == "creator_id":
+        return await resolve_creator_to_id(value)  # Same logic, different wrapper
+    elif condition == "severity_id":
+        return severity_options.get(value.lower())  # Only new part
+    # ... duplicate logic
+```
+
+#### **✅ Good Example: Enhancing Existing Methods**
+```python
+# ENHANCED - Add optional parameters to existing method
+async def _resolve_testcase_field_value(
+    condition: str, 
+    value: Any, 
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str],
+    severity_options: Optional[Dict[str, int]] = None,  # ← NEW
+    section_options: Optional[Dict[str, int]] = None    # ← NEW
+) -> Any:
+    """Enhanced existing method with new functionality."""
+    
+    # NEW functionality: Use form field mappings when available
+    if condition == "severity_id" and severity_options and value.lower() in severity_options:
+        return severity_options[value.lower()]
+    
+    # EXISTING functionality: Maintained and enhanced
+    elif condition == "creator_id":
+        return await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
+    # ... rest of existing logic
+```
+
+#### **🔍 Before Creating New Methods - Ask These Questions:**
+
+1. **Does similar functionality already exist?**
+   ```bash
+   # Search for existing methods
+   grep -n "def.*resolve.*field" src/freshrelease_mcp/server.py
+   grep -n "async def.*resolve" src/freshrelease_mcp/server.py
+   ```
+
+2. **Can I enhance the existing method instead?**
+   - Add optional parameters for new functionality
+   - Maintain backward compatibility
+   - Use progressive enhancement patterns
+
+3. **Am I duplicating logic?**
+   - If you're copying code patterns, refactor instead
+   - Create shared helper functions for common logic
+   - Use composition over duplication
+
+#### **✅ Code Review Checklist for Redundancy**
+
+Before committing new methods:
+
+- [ ] **Search existing codebase** for similar functionality
+- [ ] **Check method signatures** - do they overlap with existing methods?
+- [ ] **Analyze logic patterns** - am I copying existing conditional structures?
+- [ ] **Consider enhancement** - can I add optional parameters to existing methods?
+- [ ] **Test backward compatibility** - do existing calls still work?
+
+#### **🚨 Warning Signs of Redundant Code**
+
+- **Similar method names**: `resolve_field()` vs `resolve_field_explicit()`
+- **Duplicate conditional logic**: Same if/elif patterns in multiple methods
+- **Wrapper functions**: Methods that just call other methods with minor changes
+- **Copy-paste patterns**: Large blocks of similar code with minor variations
+
+#### **✅ Refactoring Strategy When You Find Redundancy**
+
+1. **Identify the core method** that should be enhanced
+2. **Add optional parameters** for new functionality  
+3. **Update all call sites** to use enhanced method
+4. **Remove duplicate methods** completely
+5. **Test thoroughly** to ensure no regressions
+6. **Update documentation** to reflect changes
+
+**Remember: One well-designed method is better than multiple similar methods!**
+
 ## 🔍 Pre-Commit Checklist
 
 ### **Before Adding New Code:**
 1. ✅ **Check indentation consistency**
    - All function bodies use 4 spaces
    - All nested blocks properly aligned
-   - No mixed tabs and spaces
 
-2. ✅ **Verify function structure**
+2. ✅ **Check for redundant code**
+   - Search for existing similar functionality
+   - Consider enhancing existing methods instead of creating new ones
+   - Verify no duplicate conditional logic patterns
+
+3. ✅ **Verify function structure**
    - Proper MCP tool decorators
    - Consistent parameter naming
    - Complete docstrings with Args/Returns
 
-3. ✅ **Test error scenarios**
+4. ✅ **Test error scenarios**
    - Handle all expected exceptions
    - Provide meaningful error messages
    - Include fallback behaviors
 
-4. ✅ **Optimize performance**
+5. ✅ **Optimize performance**
    - Use async/await appropriately
    - Consider parallel processing
    - Implement caching where beneficial
 
-5. ✅ **Code reusability**
+6. ✅ **Code reusability**
    - Extract common patterns into helpers
    - Follow DRY principle
    - Create reusable components
