@@ -10,6 +10,7 @@ import re
 from pydantic import BaseModel, Field
 from functools import wraps
 import time
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -360,6 +361,359 @@ async def fr_create_project(name: str, description: Optional[str] = None) -> Dic
     except Exception as e:
         return create_error_response(f"Failed to create project: {str(e)}")
 
+def _generate_bug_details(title: str, bug_type: str) -> Dict[str, str]:
+    """Generate AI-enhanced bug details based on title and bug type.
+    
+    Args:
+        title: Original bug title provided by user
+        bug_type: Type of bug (bug, support_bug, iteration_bug)
+        
+    Returns:
+        Dictionary with enhanced title, description, and steps_to_reproduce
+    """
+    # Enhanced title generation based on bug type
+    title_lower = title.lower()
+    
+    if bug_type == "support_bug":
+        if not any(word in title_lower for word in ["support", "customer", "user"]):
+            enhanced_title = f"Support Issue: {title}"
+        else:
+            enhanced_title = title
+    elif bug_type == "iteration_bug":
+        if not any(word in title_lower for word in ["iteration", "sprint", "development"]):
+            enhanced_title = f"Iteration Bug: {title}"
+        else:
+            enhanced_title = title
+    else:
+        # Regular bug
+        if not any(word in title_lower for word in ["bug", "issue", "error", "problem"]):
+            enhanced_title = f"Bug: {title}"
+        else:
+            enhanced_title = title
+    
+    # Generate steps to reproduce and contextual description
+    steps = _generate_reproduction_steps(title, bug_type)
+    contextual_desc = _generate_contextual_description(title)
+    
+    # Generate description based on bug type and title context
+    description_templates = {
+        "support_bug": f"""**Support Bug Report**
+
+**Issue Summary:** {title}
+
+**Customer Impact:** This issue affects user experience and requires immediate attention.
+
+**Business Impact:** 
+- User workflow disruption
+- Potential customer escalation
+- Support ticket volume increase
+
+{steps}
+
+**Additional Context:** 
+Please provide customer details, support ticket reference, and any customer communication history.
+""",
+        "iteration_bug": f"""**Iteration Development Bug**
+
+**Issue Summary:** {title}
+
+**Development Impact:**
+- Requires investigation and fix within iteration
+
+{steps}
+
+**Additional Context:**
+Please provide iteration details, related user stories, and development context.
+""",
+        "bug": f"""**Bug Report**
+
+**Issue Summary:** {title}
+
+**Description:** 
+{contextual_desc}
+
+**Environment:**
+- Browser/Platform: [To be specified]
+- Version: [To be specified]  
+- Environment: [Development/Staging/Production]
+
+{steps}
+
+**Additional Information:**
+Please provide any relevant logs, screenshots, or error messages.
+"""
+    }
+    
+    return {
+        "enhanced_title": enhanced_title,
+        "description": description_templates.get(bug_type, description_templates["bug"]),
+        "steps_to_reproduce": steps
+    }
+
+
+def _generate_contextual_description(title: str) -> str:
+    """Generate contextual description based on title keywords."""
+    title_lower = title.lower()
+    
+    # Common bug scenarios and their descriptions
+    if any(word in title_lower for word in ["login", "authentication", "auth"]):
+        return "User authentication system is not functioning as expected. This may prevent users from accessing the application."
+    elif any(word in title_lower for word in ["crash", "freeze", "hang"]):
+        return "Application stability issue causing unexpected termination or unresponsive behavior."
+    elif any(word in title_lower for word in ["ui", "interface", "display", "render"]):
+        return "User interface rendering or display issue affecting user experience and visual presentation."
+    elif any(word in title_lower for word in ["data", "database", "save", "load"]):
+        return "Data handling issue affecting information storage, retrieval, or processing functionality."
+    elif any(word in title_lower for word in ["performance", "slow", "timeout"]):
+        return "Performance degradation issue causing slower response times or system timeouts."
+    elif any(word in title_lower for word in ["api", "service", "endpoint"]):
+        return "API or service integration issue affecting system communication or data exchange."
+    else:
+        return "System functionality issue requiring investigation and resolution."
+
+
+def _generate_reproduction_steps(title: str, bug_type: str) -> str:
+    """Generate reproduction steps based on title analysis."""
+    title_lower = title.lower()
+    
+    if bug_type == "support_bug":
+        return """**Steps to Reproduce:**
+1. Review customer support ticket and communication
+2. Identify customer environment and configuration
+3. Attempt to reproduce issue in similar environment
+4. Document exact customer workflow that triggered the issue
+5. Verify issue consistently occurs
+
+**Expected Result:** Customer workflow should complete successfully
+**Actual Result:** [Customer reported issue occurs]"""
+    
+    elif bug_type == "iteration_bug":
+        return """**Steps to Reproduce:**
+1. Set up development environment for current iteration
+2. Execute the development workflow related to this issue
+3. Follow the specific code path or feature implementation
+4. Observe the unexpected behavior
+5. Verify issue is reproducible in development environment
+
+**Expected Result:** Development workflow should complete as designed
+**Actual Result:** [Issue occurs during development]"""
+    
+    # Generate steps based on title keywords
+    if any(word in title_lower for word in ["login", "authentication"]):
+        return """**Steps to Reproduce:**
+1. Navigate to login page
+2. Enter valid credentials
+3. Click login button
+4. Observe the behavior
+
+**Expected Result:** User should be logged in successfully
+**Actual Result:** [Describe the actual issue]"""
+    
+    elif any(word in title_lower for word in ["ui", "interface", "display"]):
+        return """**Steps to Reproduce:**
+1. Open the application/page
+2. Navigate to the affected UI component
+3. Perform the action that triggers the display issue
+4. Observe the visual behavior
+
+**Expected Result:** UI should display correctly
+**Actual Result:** [Describe the visual issue]"""
+    
+    else:
+        return """**Steps to Reproduce:**
+1. [Specify the initial setup or preconditions]
+2. [Describe the first action to perform]
+3. [Describe subsequent actions]
+4. [Describe how to trigger the issue]
+5. [Note any specific conditions required]
+
+**Expected Result:** [Describe what should happen]
+**Actual Result:** [Describe what actually happens]"""
+
+
+@mcp.tool()
+@performance_monitor("fr_create_bug")
+async def fr_create_bug(
+    title: str,
+    bug_type: str = "bug",
+    project_identifier: Optional[Union[int, str]] = None,
+    parent_id: Optional[Union[int, str]] = None,
+    assignee_id: Optional[int] = None,
+    user: Optional[str] = None,
+    priority: Optional[str] = None,
+    due_date: Optional[str] = None,
+    additional_fields: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Create a bug with AI-generated details and proper issue type mapping.
+    
+    This method creates bugs with three different types:
+    - "bug": Maps to issue type "Bug" 
+    - "support_bug": Maps to issue type "Support Bug"
+    - "iteration_bug": Maps to sub task type and requires parent_id
+    
+    The method uses AI to generate enhanced title, description, and steps to reproduce
+    based on the provided title and bug type context.
+    
+    Args:
+        title: Bug title - will be enhanced by AI (required)
+        bug_type: Type of bug - "bug", "support_bug", or "iteration_bug" (default: "bug") 
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        parent_id: Parent issue ID/key (required for iteration_bug type)
+        assignee_id: Assignee user ID (optional)
+        user: User name or email - resolves to assignee_id if assignee_id not provided
+        priority: Bug priority (optional)
+        due_date: ISO 8601 date string (optional)
+        additional_fields: Additional fields to include (optional)
+        
+    Returns:
+        Created bug data or error response
+        
+    Examples:
+        # Create a regular bug
+        fr_create_bug(title="Login page not loading", bug_type="bug")
+        
+        # Create a support bug  
+        fr_create_bug(title="Customer can't access dashboard", bug_type="support_bug", user="support@company.com")
+        
+        # Create an iteration bug (requires parent_id)
+        fr_create_bug(title="Unit test failing", bug_type="iteration_bug", parent_id="PROJ-123")
+    """
+    try:
+        # Validate bug_type
+        valid_bug_types = ["bug", "support_bug", "iteration_bug"]
+        if bug_type not in valid_bug_types:
+            return create_error_response(f"Invalid bug_type '{bug_type}'. Must be one of: {', '.join(valid_bug_types)}")
+        
+        # Validate parent_id for iteration_bug
+        if bug_type == "iteration_bug" and not parent_id:
+            return create_error_response("parent_id is required for iteration_bug type")
+        
+        # Map bug types to issue types
+        issue_type_mapping = {
+            "bug": "Bug",
+            "support_bug": "Support Bug", 
+            "iteration_bug": "Sub Task"  # Assuming sub task is available
+        }
+        
+        issue_type_name = issue_type_mapping[bug_type]
+        
+        # First, get the issue type form for the specific bug type
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        
+        # Get form fields for the specific issue type
+        form_fields_response = await fr_get_issue_form_fields(project_identifier, issue_type_name)
+        if "error" in form_fields_response:
+            return create_error_response(f"Could not get form fields for issue type '{issue_type_name}': {form_fields_response['error']}")
+        
+        # Extract mandatory fields from the form
+        form_fields = form_fields_response.get("form", {}).get("fields", [])
+        mandatory_fields = []
+        for field in form_fields:
+            if field.get("required", False):
+                field_name = field.get("name", "")
+                field_label = field.get("label", "")
+                mandatory_fields.append({
+                    "name": field_name,
+                    "label": field_label,
+                    "type": field.get("type", ""),
+                    "default": field.get("default", False)
+                })
+        
+        logging.info(f"Found {len(mandatory_fields)} mandatory fields for issue type '{issue_type_name}': {[f['name'] for f in mandatory_fields]}")
+        
+        # Generate AI-enhanced bug details
+        enhanced_details = _generate_bug_details(title, bug_type)
+        
+        # Build the bug payload with AI-generated content and handle mandatory fields
+        bug_payload = {
+            "title": enhanced_details["enhanced_title"],
+            "description": enhanced_details["description"],
+            "issue_type_name": issue_type_name
+        }
+        
+        # Check and populate mandatory fields
+        missing_fields = []
+        for field in mandatory_fields:
+            field_name = field["name"]
+            field_label = field["label"]
+            
+            # Skip fields that are already handled
+            if field_name in ["title", "description", "issue_type"]:
+                continue
+            
+            # Check if field is provided in parameters or additional_fields
+            field_value = None
+            if field_name == "assignee_id" and (assignee_id or user):
+                field_value = assignee_id or user
+            elif field_name == "priority_id" and priority:
+                field_value = priority
+            elif field_name == "due_date" and due_date:
+                field_value = due_date
+            elif field_name == "parent_id" and parent_id:
+                field_value = parent_id
+            elif additional_fields and field_name in additional_fields:
+                field_value = additional_fields[field_name]
+            
+            if field_value is None:
+                missing_fields.append(f"{field_label} ({field_name})")
+        
+        # Return error if mandatory fields are missing
+        if missing_fields:
+            return create_error_response(
+                f"Missing mandatory fields for issue type '{issue_type_name}': {', '.join(missing_fields)}. "
+                f"Please provide these fields in the function parameters or additional_fields."
+            )
+        
+        # Add steps to reproduce as additional field or custom field
+        if additional_fields:
+            additional_fields["steps_to_reproduce"] = enhanced_details["steps_to_reproduce"]
+        else:
+            additional_fields = {"steps_to_reproduce": enhanced_details["steps_to_reproduce"]}
+        
+        # Add parent_id for iteration bugs
+        if bug_type == "iteration_bug":
+            additional_fields["parent_id"] = parent_id
+        
+        # Add optional parameters
+        if assignee_id:
+            bug_payload["assignee_id"] = assignee_id
+        if user:
+            bug_payload["user"] = user
+        if priority:
+            additional_fields["priority"] = priority
+        if due_date:
+            bug_payload["due_date"] = due_date
+        
+        # Create the bug using existing fr_create_task function
+        result = await fr_create_task(
+            title=bug_payload["title"],
+            project_identifier=project_identifier,
+            description=bug_payload["description"],
+            assignee_id=bug_payload.get("assignee_id"),
+            due_date=bug_payload.get("due_date"),
+            issue_type_name=issue_type_name,
+            user=bug_payload.get("user"),
+            additional_fields=additional_fields
+        )
+        
+        # Add metadata about AI generation
+        if "error" not in result:
+            result["ai_generated_content"] = {
+                "original_title": title,
+                "bug_type": bug_type,
+                "enhanced_title": enhanced_details["enhanced_title"],
+                "ai_generated": True
+            }
+        
+        return result
+        
+    except Exception as e:
+        return create_error_response(f"Failed to create bug: {str(e)}")
+
+
 @mcp.tool()
 @performance_monitor("fr_get_project")
 async def fr_get_project(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
@@ -514,161 +868,161 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None)
 
 
 @mcp.tool()
-@performance_monitor("fr_get_epic_tasks")
-async def fr_get_epic_tasks(
+@performance_monitor("fr_get_epic_insights")
+async def fr_get_epic_insights(
     epic_key: Union[int, str],
     project_identifier: Optional[Union[int, str]] = None,
-    include_details: bool = True,
-    include: Optional[str] = None,
-    page: Optional[int] = 1,
-    per_page: Optional[int] = 50
+    fetch_detailed_tasks: bool = True,
+    max_tasks: Optional[int] = 100
 ) -> Dict[str, Any]:
-    """Get all tasks and their details that belong to a specific epic or parent task.
+    """Get comprehensive AI-powered insights for an epic including detailed task analysis, git development status, and risk assessment.
     
-    This method fetches all child tasks/subtasks under a given epic or parent task,
-    providing a complete overview of the epic's scope and progress.
+    This method fetches an epic and all its child tasks with full details, then provides intelligent
+    analysis including completion rates, team distribution, git/PR status, timeline risks, and actionable recommendations.
     
     Args:
         epic_key: Epic/Parent task ID or key (e.g., "FS-12345", 123456)
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
-        include_details: Whether to include detailed task information (default: True)
-        include: Additional fields to include (e.g., "custom_field,owner,priority,status")
-        page: Page number for pagination (default: 1)
-        per_page: Number of items per page (default: 50)
+        fetch_detailed_tasks: Whether to fetch individual task details for deep analysis (default: True)
+        max_tasks: Maximum number of tasks to analyze in detail (default: 100)
         
     Returns:
-        Dictionary containing epic details and list of child tasks or error response
+        Dictionary containing epic details, detailed child tasks, and comprehensive AI insights
         
     Examples:
-        # Get all tasks under epic FS-12345
-        fr_get_epic_tasks("FS-12345")
+        # Get comprehensive epic insights with AI analysis
+        fr_get_epic_insights("FS-12345")
         
-        # Get tasks with custom fields and specific pagination
-        fr_get_epic_tasks("FS-12345", include="custom_field,owner,status", per_page=100)
+        # Returns: {
+        #   "epic_details": {...},
+        #   "child_tasks": [...],
+        #   "ai_insights": {
+        #     "summary": "Epic contains 15 tasks with 60% completion rate...",
+        #     "insights": ["Epic is progressing well...", "Development is active..."],
+        #     "risk_factors": ["High number of open PRs..."],
+        #     "metrics": {"git_development": {"open_prs": 3}, ...}
+        #   }
+        # }
+        
+        # Get insights for large epics with task limit
+        fr_get_epic_insights("FS-12345", max_tasks=50)
     """
     try:
         # Validate environment variables
         env_data = validate_environment()
-        base_url = env_data["base_url"]
-        headers = env_data["headers"]
         project_id = get_project_identifier(project_identifier)
         
-        logging.info(f"Fetching tasks for epic/parent: {epic_key}")
+        logging.info(f"Fetching comprehensive insights for epic: {epic_key}")
         
-        # First, get the epic/parent task details
+        # Step 1: Get the epic/parent task details
         epic_details = None
-        if include_details:
-            try:
-                epic_response = await fr_get_task(project_identifier, epic_key)
-                if "error" not in epic_response:
-                    epic_details = epic_response
-                    logging.info(f"Retrieved epic details: {epic_details.get('issue', {}).get('title', 'N/A')}")
-            except Exception as e:
-                logging.warning(f"Could not fetch epic details: {str(e)}")
+        try:
+            epic_response = await fr_get_task(project_identifier, epic_key)
+            if "error" not in epic_response:
+                epic_details = epic_response
+                epic_title = epic_details.get('issue', {}).get('title', 'N/A')
+                logging.info(f"Retrieved epic details: {epic_title}")
+            else:
+                logging.warning(f"Could not fetch epic details: {epic_response.get('error', 'Unknown error')}")
+        except Exception as e:
+            logging.warning(f"Could not fetch epic details: {str(e)}")
         
-        # Build query to get all child tasks
-        # Use both parent_id and epic_id to cover all possible relationships
+        # Step 2: Get list of child tasks using filter
         query_hash = [
             {"condition": "parent_id", "operator": "is", "value": epic_key}
         ]
         
-        # Also check for epic_id if the epic_key is different from parent_id
-        # Some systems use separate epic relationships
+        # Also check for epic_id relationship
         try:
-            # Try to add epic_id filter as well for comprehensive results
             query_hash.append({"condition": "epic_id", "operator": "is", "value": epic_key})
         except Exception:
-            # If epic_id filter fails, continue with just parent_id
             pass
         
-        # Set up parameters for child task filtering
+        # Get child task list with basic info
         filter_params = {
             "query_hash": query_hash,
             "project_identifier": project_identifier,
-            "page": page,
-            "per_page": per_page
+            "page": 1,
+            "per_page": max_tasks or 100,
+            "include": "custom_field,owner,priority,status"
         }
         
-        if include:
-            filter_params["include"] = include
-        
-        # Get child tasks using the existing filter function
         child_tasks_response = await fr_filter_tasks(**filter_params)
         
         if "error" in child_tasks_response:
             return child_tasks_response
         
-        # Extract the tasks list from the response
+        # Extract task list
         if isinstance(child_tasks_response, dict) and "issues" in child_tasks_response:
-            child_tasks = child_tasks_response["issues"]
-            pagination_info = {
-                "page": child_tasks_response.get("page", page),
-                "per_page": child_tasks_response.get("per_page", per_page),
-                "total": child_tasks_response.get("total", len(child_tasks))
-            }
+            basic_child_tasks = child_tasks_response["issues"]
         elif isinstance(child_tasks_response, list):
-            child_tasks = child_tasks_response
-            pagination_info = {
-                "page": page,
-                "per_page": per_page,
-                "total": len(child_tasks)
-            }
+            basic_child_tasks = child_tasks_response
         else:
-            child_tasks = []
-            pagination_info = {
-                "page": page,
-                "per_page": per_page,
-                "total": 0
-            }
+            basic_child_tasks = []
         
-        # Prepare the response
+        logging.info(f"Found {len(basic_child_tasks)} child tasks for epic {epic_key}")
+        
+        # Step 3: Fetch detailed information for each child task (if requested)
+        detailed_child_tasks = []
+        if fetch_detailed_tasks and basic_child_tasks:
+            limited_tasks = basic_child_tasks[:max_tasks] if max_tasks else basic_child_tasks
+            
+            logging.info(f"Fetching detailed information for {len(limited_tasks)} tasks...")
+            
+            # Fetch detailed task information for each child task
+            for i, task in enumerate(limited_tasks):
+                try:
+                    # Extract task key/ID
+                    task_data = task if isinstance(task, dict) else task.get("issue", {})
+                    task_key = task_data.get("key") or task_data.get("display_id") or task_data.get("id")
+                    
+                    if task_key:
+                        # Fetch detailed task information
+                        detailed_task_response = await fr_get_task(project_identifier, task_key)
+                        if "error" not in detailed_task_response:
+                            detailed_child_tasks.append(detailed_task_response)
+                        else:
+                            # If detailed fetch fails, use basic task info
+                            detailed_child_tasks.append(task)
+                    else:
+                        # Use basic task info if no key found
+                        detailed_child_tasks.append(task)
+                        
+                    # Progress logging for large epic analysis
+                    if (i + 1) % 10 == 0:
+                        logging.info(f"Processed {i + 1}/{len(limited_tasks)} tasks...")
+                        
+                except Exception as e:
+                    logging.warning(f"Failed to fetch detailed info for task {i}: {str(e)}")
+                    # Use basic task info as fallback
+                    detailed_child_tasks.append(task)
+        else:
+            # Use basic task information
+            detailed_child_tasks = basic_child_tasks[:max_tasks] if max_tasks else basic_child_tasks
+        
+        # Step 4: Generate comprehensive AI insights
+        ai_insights = _generate_epic_insights(epic_details, detailed_child_tasks)
+        
+        # Step 5: Prepare comprehensive response
         result = {
             "epic_key": epic_key,
-            "child_tasks": child_tasks,
-            "child_tasks_count": len(child_tasks),
-            "pagination": pagination_info
+            "epic_details": epic_details,
+            "child_tasks": detailed_child_tasks,
+            "total_child_tasks": len(detailed_child_tasks),
+            "ai_insights": ai_insights,
+            "analysis_metadata": {
+                "detailed_analysis": fetch_detailed_tasks,
+                "tasks_analyzed": len(detailed_child_tasks),
+                "max_tasks_limit": max_tasks,
+                "analysis_timestamp": datetime.now().isoformat()
+            }
         }
         
-        # Add epic details if requested and available
-        if include_details and epic_details:
-            result["epic_details"] = epic_details
-        
-        # Add summary statistics
-        if child_tasks:
-            # Count tasks by status
-            status_counts = {}
-            priority_counts = {}
-            assignee_counts = {}
-            
-            for task in child_tasks:
-                task_data = task if isinstance(task, dict) else task.get("issue", {})
-                
-                # Status counts
-                status = task_data.get("status", {})
-                status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
-                status_counts[status_name] = status_counts.get(status_name, 0) + 1
-                
-                # Priority counts  
-                priority = task_data.get("priority", {})
-                priority_name = priority.get("name", "Unknown") if isinstance(priority, dict) else str(priority)
-                priority_counts[priority_name] = priority_counts.get(priority_name, 0) + 1
-                
-                # Assignee counts
-                owner = task_data.get("owner", {})
-                owner_name = owner.get("name", "Unassigned") if isinstance(owner, dict) else "Unassigned"
-                assignee_counts[owner_name] = assignee_counts.get(owner_name, 0) + 1
-            
-            result["summary"] = {
-                "status_breakdown": status_counts,
-                "priority_breakdown": priority_counts,
-                "assignee_breakdown": assignee_counts
-            }
-        
-        logging.info(f"Retrieved {len(child_tasks)} child tasks for epic {epic_key}")
+        logging.info(f"Generated comprehensive insights for epic {epic_key} with {len(detailed_child_tasks)} tasks")
         return result
 
     except Exception as e:
-        error_msg = f"Failed to get epic tasks: {str(e)}"
+        error_msg = f"Failed to get epic insights: {str(e)}"
         logging.error(error_msg)
         return create_error_response(error_msg)
 
@@ -1467,7 +1821,7 @@ async def fr_filter_tasks(
         # Date range filtering using query_hash
         fr_filter_tasks(query_hash=[
             {"condition": "start_date", "operator": "is_in_the_range", 
-             "value": "2024-12-31T18:30:00.000Z,2025-08-31T18:29:59.999Z"}
+            "value": "2024-12-31T18:30:00.000Z,2025-08-31T18:29:59.999Z"}
         ])
         
         # Using individual field parameters with names (automatically resolved to IDs)
@@ -1983,6 +2337,453 @@ async def _get_testcase_fields_mapping(
         return {"error": f"Failed to get testcase fields mapping: {str(e)}"}
 
 
+def _generate_epic_insights(epic_details: Dict[str, Any], child_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate comprehensive AI insights for an epic and its child tasks.
+    
+    Args:
+        epic_details: Epic/parent task details
+        child_tasks: List of detailed child task objects
+        
+    Returns:
+        Dictionary containing comprehensive epic insights and analysis
+    """
+    total_tasks = len(child_tasks)
+    
+    if total_tasks == 0:
+        return {
+            "summary": "This epic has no child tasks yet.",
+            "total_tasks": 0,
+            "insights": ["Consider breaking down the epic into actionable tasks."],
+            "recommendations": ["Define clear deliverables and create corresponding tasks."],
+            "risk_factors": ["No tasks defined - epic scope unclear"]
+        }
+    
+    # Initialize analysis counters
+    status_counts = {}
+    priority_counts = {}
+    assignee_counts = {}
+    git_pr_info = {"open_prs": 0, "merged_prs": 0, "branches": [], "commits": []}
+    date_info = {"start_dates": [], "due_dates": [], "creation_dates": []}
+    effort_info = {"story_points": 0, "estimated_hours": 0}
+    
+    # Analyze each task in detail
+    for task in child_tasks:
+        task_data = task.get("issue", {}) if "issue" in task else task
+        
+        # Status analysis
+        status = task_data.get("status", {})
+        status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
+        status_counts[status_name] = status_counts.get(status_name, 0) + 1
+        
+        # Priority analysis
+        priority = task_data.get("priority", {})
+        priority_name = priority.get("name", "Unknown") if isinstance(priority, dict) else str(priority)
+        priority_counts[priority_name] = priority_counts.get(priority_name, 0) + 1
+        
+        # Assignee analysis
+        owner = task_data.get("owner", {})
+        owner_name = owner.get("name", "Unassigned") if isinstance(owner, dict) else "Unassigned"
+        assignee_counts[owner_name] = assignee_counts.get(owner_name, 0) + 1
+        
+        # Git/PR analysis from custom fields and description
+        custom_fields = task_data.get("custom_field", {})
+        description = task_data.get("description", "")
+        
+        # Look for PR references in description and custom fields
+        import re
+        pr_patterns = [
+            r'PR[:\s#]*(\d+)',
+            r'pull request[:\s#]*(\d+)',
+            r'github\.com/[^/]+/[^/]+/pull/(\d+)',
+            r'\/pull\/(\d+)'
+        ]
+        
+        for pattern in pr_patterns:
+            matches = re.findall(pattern, description, re.IGNORECASE)
+            for match in matches:
+                if "open" in description.lower() or "pending" in description.lower():
+                    git_pr_info["open_prs"] += 1
+                else:
+                    git_pr_info["merged_prs"] += 1
+        
+        # Look for branch references
+        branch_patterns = [
+            r'branch[:\s]*([a-zA-Z0-9\-_/]+)',
+            r'feature/([a-zA-Z0-9\-_/]+)',
+            r'bugfix/([a-zA-Z0-9\-_/]+)'
+        ]
+        
+        for pattern in branch_patterns:
+            matches = re.findall(pattern, description, re.IGNORECASE)
+            git_pr_info["branches"].extend(matches)
+        
+        # Date analysis
+        if task_data.get("start_date"):
+            date_info["start_dates"].append(task_data["start_date"])
+        if task_data.get("due_by"):
+            date_info["due_dates"].append(task_data["due_by"])
+        if task_data.get("created_at"):
+            date_info["creation_dates"].append(task_data["created_at"])
+        
+        # Effort analysis
+        story_points = task_data.get("story_points", 0) or 0
+        effort_info["story_points"] += story_points
+        
+        # Look for time estimates in custom fields
+        for field_name, field_value in custom_fields.items():
+            if "hour" in field_name.lower() or "time" in field_name.lower():
+                if isinstance(field_value, (int, float)):
+                    effort_info["estimated_hours"] += field_value
+    
+    # Calculate completion rate
+    completed_statuses = ["done", "completed", "resolved", "closed", "finished"]
+    completed_tasks = sum(count for status, count in status_counts.items() 
+                        if any(comp in status.lower() for comp in completed_statuses))
+    completion_rate = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
+    
+    # Calculate timeline insights
+    timeline_insights = {}
+    if date_info["start_dates"]:
+        earliest_start = min(date_info["start_dates"])
+        timeline_insights["earliest_start"] = earliest_start
+    if date_info["due_dates"]:
+        latest_due = max(date_info["due_dates"])
+        timeline_insights["latest_due"] = latest_due
+    if date_info["creation_dates"]:
+        first_created = min(date_info["creation_dates"])
+        latest_created = max(date_info["creation_dates"])
+        timeline_insights["creation_span"] = {"first": first_created, "latest": latest_created}
+    
+    # Generate insights
+    insights = []
+    recommendations = []
+    risk_factors = []
+    
+    # Completion insights
+    if completion_rate < 25:
+        insights.append(f"Epic is in early stages with {completion_rate:.1f}% completion rate.")
+        recommendations.append("Focus on task prioritization and clear requirements.")
+    elif completion_rate < 75:
+        insights.append(f"Epic is progressing well with {completion_rate:.1f}% completion rate.")
+        recommendations.append("Monitor blockers and maintain development momentum.")
+    else:
+        insights.append(f"Epic is nearly complete with {completion_rate:.1f}% completion rate.")
+        recommendations.append("Focus on final testing and deployment preparation.")
+    
+    # Team distribution insights
+    if len(assignee_counts) == 1 and "Unassigned" not in assignee_counts:
+        insights.append("Epic is handled by a single developer.")
+        risk_factors.append("Single point of failure - no backup coverage")
+        recommendations.append("Consider involving additional team members for knowledge sharing.")
+    elif len(assignee_counts) > 5:
+        insights.append(f"Epic involves {len(assignee_counts)} team members.")
+        risk_factors.append("High coordination overhead with many contributors")
+        recommendations.append("Ensure clear communication channels and regular sync-ups.")
+    elif "Unassigned" in assignee_counts and assignee_counts["Unassigned"] > total_tasks * 0.3:
+        unassigned_pct = (assignee_counts["Unassigned"] / total_tasks) * 100
+        insights.append(f"{unassigned_pct:.1f}% of tasks are unassigned.")
+        risk_factors.append("High number of unassigned tasks may cause delays")
+        recommendations.append("Assign ownership to all tasks for better accountability.")
+    
+    # Git/PR insights  
+    if git_pr_info["open_prs"] > 0:
+        insights.append(f"Found {git_pr_info['open_prs']} open pull requests in development.")
+        if git_pr_info["open_prs"] > 3:
+            risk_factors.append("High number of open PRs may indicate review bottlenecks")
+            recommendations.append("Prioritize code reviews to prevent merge conflicts.")
+    
+    if git_pr_info["merged_prs"] > 0:
+        insights.append(f"Development is active with {git_pr_info['merged_prs']} merged pull requests.")
+        
+    # Priority distribution insights
+    high_priority_tasks = priority_counts.get("High", 0) + priority_counts.get("Critical", 0)
+    if high_priority_tasks > total_tasks * 0.5:
+        insights.append("Over half the tasks are high/critical priority.")
+        risk_factors.append("Too many high-priority tasks may indicate scope creep")
+        recommendations.append("Re-evaluate task priorities and consider epic scope reduction.")
+    
+    # Timeline risk assessment
+    if timeline_insights.get("latest_due"):
+        from datetime import datetime, timezone
+        try:
+            due_date = datetime.fromisoformat(timeline_insights["latest_due"].replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            days_remaining = (due_date - now).days
+            
+            if days_remaining < 0:
+                risk_factors.append(f"Epic is overdue by {abs(days_remaining)} days")
+                recommendations.append("Immediate attention required - reassess scope and resources.")
+            elif days_remaining < 7:
+                risk_factors.append(f"Epic due in {days_remaining} days with {completion_rate:.1f}% completion")
+                recommendations.append("Consider scope reduction or deadline extension.")
+        except Exception:
+            pass
+    
+    # Generate summary
+    summary_parts = [f"Epic contains {total_tasks} tasks with {completion_rate:.1f}% completion rate."]
+    if len(assignee_counts) > 1:
+        summary_parts.append(f"Work is distributed across {len(assignee_counts)} team members.")
+    if git_pr_info["open_prs"] > 0:
+        summary_parts.append(f"{git_pr_info['open_prs']} pull requests are currently open.")
+    
+    return {
+        "summary": " ".join(summary_parts),
+        "total_tasks": total_tasks,
+        "completion_rate": f"{completion_rate:.1f}%",
+        "insights": insights,
+        "recommendations": recommendations,
+        "risk_factors": risk_factors,
+        "metrics": {
+            "status_distribution": status_counts,
+            "priority_distribution": priority_counts,
+            "assignee_distribution": assignee_counts,
+            "git_development": git_pr_info,
+            "effort_summary": effort_info,
+            "timeline": timeline_insights
+        }
+    }
+
+
+def _generate_testrun_insights(test_run: Dict[str, Any], users: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Generate simplified AI insights for a test run.
+    
+    Args:
+        test_run: Test run data from API
+        users: List of users associated with the test run
+        
+    Returns:
+        Dictionary containing streamlined test run insights
+    """
+    progress = test_run.get("progress", {})
+    total_tests = sum(progress.values())
+    
+    if total_tests == 0:
+        return {
+            "summary": "Empty test run - no test cases added yet.",
+            "quality_score": "No Data",
+            "recommendations": ["Add test cases to begin quality assessment"]
+        }
+    
+    # Core metrics
+    passed = progress.get("passed", 0)
+    failed = progress.get("failed", 0)
+    blocked = progress.get("blocked", 0)
+    not_run = progress.get("not_run", 0)
+    
+    executed = passed + failed
+    pass_rate = (passed / total_tests) * 100 if total_tests > 0 else 0
+    completion_rate = (executed / total_tests) * 100 if total_tests > 0 else 0
+    
+    # Quality assessment
+    if completion_rate >= 90:
+        if pass_rate >= 95:
+            quality_score = "Excellent"
+        elif pass_rate >= 85:
+            quality_score = "Good"
+        elif pass_rate >= 70:
+            quality_score = "Fair"
+        else:
+            quality_score = "Poor"
+    else:
+        quality_score = "In Progress"
+    
+    # Generate concise summary
+    if completion_rate == 100:
+        if failed == 0:
+            summary = f"All {total_tests} tests passed successfully! 🎉"
+        else:
+            summary = f"{passed}/{total_tests} tests passed ({pass_rate:.0f}%). {failed} failures need attention."
+    else:
+        summary = f"{executed}/{total_tests} tests executed ({completion_rate:.0f}% complete). {passed} passed, {failed} failed."
+    
+    # Key recommendations
+    recommendations = []
+    if failed > 0:
+        recommendations.append(f"Fix {failed} failing test cases")
+    if blocked > 0:
+        recommendations.append(f"Resolve {blocked} blocked tests")
+    if not_run > 0 and completion_rate < 100:
+        recommendations.append(f"Execute remaining {not_run} test cases")
+    if not recommendations:
+        recommendations.append("Test run is progressing well")
+    
+    # Get team info efficiently
+    creator_name = "Unknown"
+    if users and test_run.get("creator_id"):
+        creator = next((u.get("name") for u in users if u.get("id") == test_run.get("creator_id")), None)
+        if creator:
+            creator_name = creator
+    
+    return {
+        "summary": summary,
+        "quality_score": quality_score,
+        "recommendations": recommendations,
+        "metrics": {
+            "total_tests": total_tests,
+            "passed": passed,
+            "failed": failed,
+            "blocked": blocked,
+            "not_run": not_run,
+            "pass_rate": f"{pass_rate:.1f}%",
+            "completion_rate": f"{completion_rate:.1f}%"
+        },
+        "created_by": creator_name
+    }
+
+
+def _add_ai_summary_to_testcase_result(result: Dict[str, Any], filter_criteria: Dict[str, Any]) -> Dict[str, Any]:
+    """Add AI summary to testcase API result.
+    
+    Args:
+        result: API response containing test cases
+        filter_criteria: Applied filter criteria for context
+        
+    Returns:
+        Enhanced result with AI summary or original result if error
+    """
+    if "error" in result:
+        return result
+        
+    test_cases = result.get("test_cases", [])
+    ai_summary = _generate_testcase_summary(test_cases, filter_criteria)
+    
+    return {
+        "test_cases": test_cases,
+        "ai_summary": ai_summary,
+        "original_response": result
+    }
+
+
+def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate AI-powered summary of filtered test cases.
+    
+    Args:
+        test_cases: List of filtered test case objects
+        filter_criteria: Applied filter criteria for context
+        
+    Returns:
+        Dictionary containing comprehensive summary and insights
+    """
+    if not test_cases:
+        return {
+            "summary": "No test cases found matching the specified criteria.",
+            "total_count": 0,
+            "insights": ["Consider broadening your filter criteria to find relevant test cases."],
+            "recommendations": ["Review section structure and test case organization."]
+        }
+    
+    total_count = len(test_cases)
+    
+    # Analyze test case distribution
+    severity_counts = {}
+    section_counts = {}
+    creator_counts = {}
+    status_counts = {}
+    automation_status = {"automated": 0, "manual": 0, "not_specified": 0}
+    
+    for tc in test_cases:
+        # Severity analysis
+        severity_id = tc.get("severity_id")
+        if severity_id:
+            severity_counts[severity_id] = severity_counts.get(severity_id, 0) + 1
+        
+        # Section analysis  
+        section_id = tc.get("section_id")
+        if section_id:
+            section_counts[section_id] = section_counts.get(section_id, 0) + 1
+            
+        # Creator analysis
+        creator_id = tc.get("creator_id")
+        if creator_id:
+            creator_counts[creator_id] = creator_counts.get(creator_id, 0) + 1
+            
+        # Status analysis
+        status_id = tc.get("test_case_status_id")
+        if status_id:
+            status_counts[status_id] = status_counts.get(status_id, 0) + 1
+            
+        # Automation analysis from custom fields
+        custom_fields = tc.get("custom_field", {})
+        automation = custom_fields.get("cf_automation_status", "").lower()
+        if "automated" in automation:
+            automation_status["automated"] += 1
+        elif "manual" in automation or "not automated" in automation:
+            automation_status["manual"] += 1
+        else:
+            automation_status["not_specified"] += 1
+    
+    # Generate insights based on analysis
+    insights = []
+    recommendations = []
+    
+    # Coverage insights
+    if total_count < 10:
+        insights.append(f"Limited test coverage with only {total_count} test cases.")
+        recommendations.append("Consider expanding test case coverage for better quality assurance.")
+    elif total_count > 100:
+        insights.append(f"Comprehensive test suite with {total_count} test cases.")
+        recommendations.append("Consider organizing test cases into logical groups for better maintainability.")
+    
+    # Automation insights
+    automation_rate = (automation_status["automated"] / total_count) * 100 if total_count > 0 else 0
+    if automation_rate < 30:
+        insights.append(f"Low automation rate ({automation_rate:.1f}%). Most tests are manual.")
+        recommendations.append("Prioritize test automation to improve execution efficiency.")
+    elif automation_rate > 70:
+        insights.append(f"High automation rate ({automation_rate:.1f}%). Well-automated test suite.")
+        recommendations.append("Maintain automation coverage and keep tests up-to-date.")
+    
+    # Distribution insights
+    if len(section_counts) == 1:
+        insights.append("Test cases are concentrated in a single section.")
+        recommendations.append("Ensure test coverage across different application areas.")
+    elif len(section_counts) > 5:
+        insights.append(f"Test cases span across {len(section_counts)} different sections.")
+        recommendations.append("Review section organization for optimal test management.")
+    
+    # Creator diversity
+    if len(creator_counts) == 1:
+        insights.append("All test cases created by a single person.")
+        recommendations.append("Encourage team collaboration in test case creation.")
+    elif len(creator_counts) > 5:
+        insights.append(f"Test cases created by {len(creator_counts)} different team members.")
+        recommendations.append("Maintain consistent quality standards across different creators.")
+    
+    # Generate summary text
+    summary_parts = [f"Found {total_count} test cases matching your criteria."]
+    
+    if automation_status["automated"] > 0:
+        summary_parts.append(f"{automation_status['automated']} are automated")
+    if automation_status["manual"] > 0:
+        summary_parts.append(f"{automation_status['manual']} are manual")
+    
+    summary = " ".join(summary_parts) + "."
+    
+    # Risk assessment
+    risk_factors = []
+    if automation_rate < 50:
+        risk_factors.append("Low automation coverage may impact release velocity")
+    if len(creator_counts) == 1:
+        risk_factors.append("Single point of knowledge risk")
+    if total_count < 5:
+        risk_factors.append("Insufficient test coverage")
+        
+    return {
+        "summary": summary,
+        "total_count": total_count,
+        "insights": insights,
+        "recommendations": recommendations,
+        "risk_factors": risk_factors,
+        "metrics": {
+            "automation_rate": f"{automation_rate:.1f}%",
+            "sections_covered": len(section_counts),
+            "contributors": len(creator_counts),
+            "status_distribution": len(status_counts)
+        },
+        "filter_applied": filter_criteria
+    }
+
+
 def _add_query_hash_value(params: Dict[str, Any], index: int, value: Any) -> None:
     """Helper function to add query_hash values, handling both single and array values.
     
@@ -2048,8 +2849,8 @@ async def _resolve_testcase_field_value(
 
 
 @mcp.tool()
-@performance_monitor("fr_filter_testcases")
-async def fr_filter_testcases(
+@performance_monitor("fr_testcase_filter_summary")
+async def fr_testcase_filter_summary(
     project_identifier: Optional[Union[int, str]] = None,
     filter_rules: Optional[List[Dict[str, Any]]] = None,
     query: Optional[Union[str, Dict[str, Any]]] = None,
@@ -2065,10 +2866,10 @@ async def fr_filter_testcases(
     sort_type: Optional[str] = "asc",
     test_run_id: Optional[Union[int, str]] = None
 ) -> Any:
-    """Filter test cases using filter rules with automatic label-to-condition and name-to-ID resolution.
+    """Filter test cases and generate AI-powered summary with automatic label-to-condition and name-to-ID resolution.
     
-    This tool allows you to filter test cases by various criteria using either user-friendly field labels 
-    or internal condition names. Supports native query_hash format for optimal performance.
+    This tool filters test cases by various criteria and provides intelligent insights, recommendations,
+    and risk assessment based on the filtered results. Supports native query_hash format for optimal performance.
     
     Field Label Support:
     - "Pre-requisite": Maps to pre_requisite condition  
@@ -2101,54 +2902,30 @@ async def fr_filter_testcases(
         test_run_id: Test run ID for filtering test cases within a specific test run
     
     Returns:
-        Filtered list of test cases or error response
+        Dictionary containing filtered test cases with AI-generated summary, insights, and recommendations
         
     Examples:
-        # Using comma-separated query format (simple and intuitive)
-        fr_filter_testcases(query="Section:Authentication,Type:Functional Test,Creator:John Doe")
+        # Get test case summary with AI insights
+        fr_testcase_filter_summary(query="Section:Authentication,Creator:John Doe")
         
-        # Multiple field filtering with comma-separated format
-        fr_filter_testcases(query="Severity:High,Status:Active,Creator:jane@company.com")
+        # Returns: {
+        #   "test_cases": [...],
+        #   "ai_summary": {
+        #     "summary": "Found 25 test cases. 15 are automated, 10 are manual.",
+        #     "insights": ["High automation rate (60%). Well-automated test suite."],
+        #     "recommendations": ["Maintain automation coverage and keep tests up-to-date."],
+        #     "metrics": {"automation_rate": "60.0%", "sections_covered": 3}
+        #   }
+        # }
         
-        # Using native query_hash format (preferred for complex queries)
-        fr_filter_testcases(query_hash=[
-            {"condition": "status", "operator": "is", "value": 1},
-            {"condition": "creator_id", "operator": "is_in", "value": [50624]}
-        ])
-        
-        # Using filter_rules (legacy, auto-converted to query_hash)
-        fr_filter_testcases(filter_rules=[
-            {"condition": "Section", "operator": "is", "value": "Authentication"},
-            {"condition": "Type", "operator": "is", "value": "Functional Test"},
-            {"condition": "Creator", "operator": "is", "value": "John Doe"}
-        ])
-        
-        # With pagination, sorting, and test run filtering
-        fr_filter_testcases(
-            query_hash=[{"condition": "creator_id", "operator": "is", "value": 50624}],
-            include="custom_field",
-            page=1,
-            per_page=15,
-            sort="id",
-            sort_type="asc",
-            test_run_id=154125
-        )
-        
-        # Complex filtering with duplicates, arrays, and test run
-        fr_filter_testcases(
+        # Complex filtering with summary insights
+        fr_testcase_filter_summary(
             query_hash=[
-                {"condition": "severity_id", "operator": "is_in", "value": [17, 16, 15]},
-                {"condition": "creator_id", "operator": "is_in", "value": [50624]},
-                {"condition": "source_of_creation", "operator": "is_in", "value": [0]},
-                {"condition": "section_id", "operator": "is", "value": 59866}
+                {"condition": "severity_id", "operator": "is_in", "value": [17, 16]},
+                {"condition": "creator_id", "operator": "is_in", "value": [50624]}
             ],
-            page=1,
-            per_page=15,
-            sort="id",
-            sort_type="asc",
-            test_run_id=154125
+            include="custom_field"
         )
-        # Results in: query_hash[0] through query_hash[3] with proper array formatting
     """
     try:
         # Validate environment variables and initialize API objects once
@@ -2254,7 +3031,15 @@ async def fr_filter_testcases(
                 # Make API request with converted query
                 url = f"{base_url}/{project_id}/test_cases"
                 result = await make_api_request("GET", url, headers, params=params, client=client)
-                return result
+                
+                # Add AI summary to the result
+                filter_criteria = {
+                    "query": query,
+                    "query_format": query_format,
+                    "page": page,
+                    "per_page": per_page
+                }
+                return _add_ai_summary_to_testcase_result(result, filter_criteria)
 
         # Handle native query_hash format (highest priority)
         if query_hash:
@@ -2277,13 +3062,28 @@ async def fr_filter_testcases(
             # Make API request with query_hash
             url = f"{base_url}/{project_id}/test_cases"
             result = await make_api_request("GET", url, headers, params=params, client=client)
-            return result
+            
+            # Add AI summary to the result
+            filter_criteria = {
+                "query_hash": query_hash,
+                "page": page,
+                "per_page": per_page
+            }
+            return _add_ai_summary_to_testcase_result(result, filter_criteria)
 
         # Handle legacy filter_rules format (convert to query_hash)
         if not filter_rules:
             # No filtering criteria provided, return all test cases with pagination/sorting
             url = f"{base_url}/{project_id}/test_cases"
-            return await make_api_request("GET", url, headers, params=params, client=client)
+            result = await make_api_request("GET", url, headers, params=params, client=client)
+            
+            # Add AI summary to the result
+            filter_criteria = {
+                "filter_type": "all_testcases",
+                "page": page,
+                "per_page": per_page
+            }
+            return _add_ai_summary_to_testcase_result(result, filter_criteria)
 
         # Get testcase field mappings for label-to-condition translation
         field_mapping_result = await _get_testcase_fields_mapping(project_identifier)
@@ -2318,7 +3118,14 @@ async def fr_filter_testcases(
         # Make the API request
         url = f"{base_url}/{project_id}/test_cases"
         result = await make_api_request("GET", url, headers, params=params, client=client)
-        return result
+        
+        # Add AI summary to the result
+        filter_criteria = {
+            "filter_rules": filter_rules,
+            "page": page,
+            "per_page": per_page
+        }
+        return _add_ai_summary_to_testcase_result(result, filter_criteria)
 
     except Exception as e:
         return create_error_response(f"Failed to filter test cases: {str(e)}")
@@ -2518,18 +3325,37 @@ async def fr_clear_all_caches() -> Any:
 
 
 @mcp.tool()
-async def fr_get_testrun_details(
+@performance_monitor("fr_get_testrun_summary")
+async def fr_get_testrun_summary(
     test_run_id: Union[int, str],
     project_identifier: Optional[Union[int, str]] = None
 ) -> Dict[str, Any]:
-    """Get test run details with simple execution insights.
+    """Get test run summary with simplified AI insights and quality analysis.
+    
+    Provides concise test run analysis focusing on key metrics, quality score,
+    and actionable recommendations.
     
     Args:
         test_run_id: Test run ID (required)
         project_identifier: Project ID or key (optional)
         
     Returns:
-        Test run details with execution summary
+        Dictionary containing test run summary with AI insights
+        
+    Examples:
+        # Get test run summary with AI insights
+        fr_get_testrun_summary(150183)
+        
+        # Returns: {
+        #   "test_run_id": 150183,
+        #   "name": "Sprint 1 Test Run",
+        #   "status": "active", 
+        #   "ai_insights": {
+        #     "summary": "23/25 tests executed (92% complete). 21 passed, 2 failed.",
+        #     "quality_score": "Good",
+        #     "recommendations": ["Fix 2 failing test cases"]
+        #   }
+        # }
     """
     try:
         env_data = validate_environment()
@@ -2550,40 +3376,24 @@ async def fr_get_testrun_details(
         if not test_run:
             return create_error_response("Test run not found")
             
-        progress = test_run.get("progress", {})
-        creator = next((u.get("name", "Unknown") for u in response.get("users", []) if u.get("id") == test_run.get("creator_id")), "Unknown")
+        users = response.get("users", [])
         
-        # Simple metrics
-        total = sum(progress.values())
-        passed = progress.get("passed", 0)
-        failed = progress.get("failed", 0)
+        # Generate AI insights
+        ai_insights = _generate_testrun_insights(test_run, users)
         
-        # Build simple response
+        # Build streamlined response
         result = {
-            "id": test_run.get("id"),
+            "test_run_id": test_run.get("id"),
             "name": test_run.get("name"),
             "status": test_run.get("status"),
-            "creator": creator,
-            "total_tests": total,
-            "passed": passed,
-            "failed": failed,
-            "progress": progress
+            "ai_insights": ai_insights,
+            "raw_progress": test_run.get("progress", {})
         }
         
-        # Simple insights
-        if total == 0:
-            result["insight"] = "No test cases in this run"
-        elif failed > 0:
-            result["insight"] = f"{failed} test cases failed out of {total}"
-        elif passed == total:
-            result["insight"] = f"All {total} test cases passed successfully"
-        else:
-            result["insight"] = f"{passed}/{total} test cases completed"
-            
         return result
         
     except Exception as e:
-        return create_error_response(f"Failed to get test run details: {str(e)}")
+        return create_error_response(f"Failed to get test run summary: {str(e)}")
 
 
 async def fr_get_performance_stats() -> Dict[str, Any]:

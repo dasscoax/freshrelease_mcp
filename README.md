@@ -32,7 +32,7 @@ An MCP server that enables AI models to interact with Freshrelease through power
 | `fr_get_project` | Get project details | `project_identifier` |
 | `fr_get_task` | Get task by ID/key | `project_identifier`, `key` |
 | `fr_get_all_tasks` | List all project tasks | `project_identifier` |
-| `fr_get_epic_tasks` | Get all tasks under an epic/parent | `epic_key`, `include_details`, `include` |
+| `fr_get_epic_insights` | Get comprehensive AI insights for epics with detailed task analysis | `epic_key`, `fetch_detailed_tasks`, `max_tasks` |
 | `fr_get_issue_type_by_name` | Resolve issue type names | `issue_type_name` |
 | `get_task_default_and_custom_fields` | Get form fields for issue types | `issue_type_name` |
 | `fr_search_users` | Find users by name/email | `search_text` |
@@ -44,9 +44,9 @@ An MCP server that enables AI models to interact with Freshrelease through power
 | `fr_get_testcase` | Get specific test case | `test_case_key` |
 | `fr_get_testcases_by_section` | Get tests by section | `section_name` |
 | `fr_link_testcase_issues` | Link tests to issues | `testcase_keys`, `issue_keys` |
-| `fr_filter_testcases` | Advanced test filtering | `filter_rules` |
+| `fr_testcase_filter_summary` | Advanced test filtering with AI insights | `filter_rules` |
 | `fr_add_testcases_to_testrun` | Add tests to run | `test_run_id`, `test_case_keys` |
-| `fr_get_testrun_details` | Get test run insights | `test_run_id` |
+| `fr_get_testrun_summary` | Get comprehensive test run summary with AI quality analysis | `test_run_id` |
 
 ### **Smart Filtering**  
 | Tool | Purpose | Key Parameters |
@@ -124,11 +124,13 @@ Add to `~/.cursor/mcp.json`:
 **Get specific task details:**
 > "Get details for task FS-123"
 
-**Get all tasks under an epic:**
-> "Show me all tasks and their status under epic FS-223786"
+**Get comprehensive epic insights with AI analysis:**
+> "Show me detailed insights for epic FS-223786 including git status and risk assessment"
 
 The AI will automatically:
-- Fetch the epic details and all child tasks
+- Fetch the epic details and all child tasks with full information
+- Analyze git/PR development status from task descriptions
+- Provide AI-powered insights on completion rates, team distribution, and timeline risks
 - Provide status breakdown and progress summary
 - Show assignee distribution and priority breakdown
 
@@ -155,16 +157,49 @@ The AI understands both:
 
 The AI can navigate up to 7 levels deep in section hierarchies automatically.
 
-**Get test run insights:**
+**Get concise test run summary with AI insights:**
 > "How is test run 150183 performing?"
 
 **Response example:**
-*"Test run has 8 total tests, all 8 passed successfully. Great job!"*
+*"23/25 tests executed (92% complete). 21 passed, 2 failed. Quality score: Good. Fix 2 failing test cases."*
+
+## 🛠️ Development Tools
+
+### **Code Quality Assurance**
+This project includes comprehensive tools to maintain code quality and prevent common issues:
+
+#### **📋 Code Quality Guide** (`CODE_QUALITY_GUIDE.md`)
+- Complete indentation standards and best practices
+- Project-specific code patterns and templates  
+- Common mistakes to avoid with examples
+- Performance optimization guidelines
+- Pre-commit checklist for developers
+
+#### **🔍 Automated Quality Checker** (`quality_check.py`)
+Run quality checks on any Python file:
+```bash
+python3 quality_check.py src/freshrelease_mcp/server.py
+```
+
+**Features:**
+- ✅ Indentation validation (4-space standard)
+- ✅ MCP tool structure verification
+- ✅ Function docstring checks
+- ✅ Async/await pattern validation
+- ✅ Error handling analysis
+
+**Example output:**
+```
+✅ No issues found in src/freshrelease_mcp/server.py
+```
 
 ## 🆕 Latest Updates
 
-### **v1.8.5 - Epic Management & Enhanced Filtering**
-- ✅ **Epic Task Management**: New `fr_get_epic_tasks` tool to fetch all tasks under an epic with progress summaries
+### **v1.9.7 - Optimized AI Insights & Code Quality**
+- ✅ **Optimized Test Run AI**: Simplified `fr_get_testrun_summary` with concise insights, quality scores, and focused recommendations
+- ✅ **Epic AI Insights**: Renamed and enhanced `fr_get_epic_insights` with comprehensive AI analysis including git/PR status, risk assessment, and detailed task analysis
+- ✅ **Test Case AI Summary**: Renamed `fr_filter_testcases` to `fr_testcase_filter_summary` with intelligent insights and automation analysis
+- ✅ **Code Quality Tools**: Added comprehensive code quality guide (`CODE_QUALITY_GUIDE.md`) and automated quality checker (`quality_check.py`)
 - ✅ **Enhanced Field Mapping**: Fixed filtering issues with improved field label resolution
 - ✅ **Better Error Handling**: Comprehensive logging and error messages for debugging
 - ✅ **Issue Key Resolution**: Support for parent_id and epic_id filtering using issue keys
