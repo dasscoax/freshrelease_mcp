@@ -1032,7 +1032,7 @@ def _find_section_by_name(sections: List[Dict[str, Any]], target_name: str) -> O
     for section in sections:
         section_name = section.get("name")
         if section_name and str(section_name).strip().lower() == target_lower:
-                section_id = section.get("id")
+            section_id = section.get("id")
             return section_id if isinstance(section_id, int) else None
     
     return None
@@ -1064,7 +1064,7 @@ async def _fetch_sections_at_level(
     # Build URL based on hierarchy level
     if parent_section_id is None:
         url = f"{base_url}/{project_identifier}/sections"
-                    else:
+    else:
         url = f"{base_url}/{project_identifier}/sections/{parent_section_id}/sections"
     
     # Fetch and parse response
@@ -2061,8 +2061,8 @@ async def fr_filter_testcases(
     include: Optional[str] = None,
     page: Optional[int] = 1,
     per_page: Optional[int] = 30,
-    sort: Optional[str] = None,
-    sort_type: Optional[str] = None,
+    sort: Optional[str] = "created_at",
+    sort_type: Optional[str] = "asc",
     test_run_id: Optional[Union[int, str]] = None
 ) -> Any:
     """Filter test cases using filter rules with automatic label-to-condition and name-to-ID resolution.
@@ -2293,12 +2293,12 @@ async def fr_filter_testcases(
         field_label_to_condition_map = field_mapping_result.get("field_label_to_condition_map", {})
 
         # Convert filter_rules to query_hash format
-            for i, rule in enumerate(filter_rules):
-                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                    condition = rule["condition"]
-                    operator = rule["operator"]
-                    value = rule["value"]
-                    
+        for i, rule in enumerate(filter_rules):
+            if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                condition = rule["condition"]
+                operator = rule["operator"]
+                value = rule["value"]
+                
                 # Map field label to condition name if needed (case-insensitive)
                 condition_lower = condition.lower()
                 if condition_lower in field_label_to_condition_map:
