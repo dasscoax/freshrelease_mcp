@@ -893,24 +893,31 @@ async def _filter_tasks_internal(**kwargs) -> Any:
     return await fr_filter_tasks(**kwargs)
 
 
+async def _filter_epics_internal(**kwargs) -> Any:
+    """Internal helper for filtering epics without exposing as MCP tool."""
+    # Call the actual fr_filter_epics implementation but without the @mcp.tool decorator
+    return await fr_filter_epics(**kwargs)
+
+
 @mcp.tool()
 @performance_monitor("fr_get_epic_insights")
 async def fr_get_epic_insights(
     epic_key: Union[int, str],
     project_identifier: Optional[Union[int, str]] = None,
     fetch_detailed_tasks: bool = True,
-    max_tasks: Optional[int] = 100
+    max_tasks: int = 100
 ) -> Dict[str, Any]:
     """Get comprehensive AI-powered insights for an epic including detailed task analysis, git development status, and risk assessment.
     
-    This method fetches an epic and its child tasks (up to max_tasks limit), then provides intelligent
+    This method fetches an epic and its child tasks (up to max_tasks limit) using optimized epic filtering
+    (filter_id=102776, enhanced includes, display_id sorting), then provides intelligent
     analysis including completion rates, team distribution, git/PR status, timeline risks, and actionable recommendations.
     
     Args:
         epic_key: Epic/Parent task ID or key (e.g., "FS-12345", 123456)
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         fetch_detailed_tasks: Whether to fetch individual task details for deep analysis (default: True)
-        max_tasks: Maximum number of tasks to analyze in detail (default: 100)
+        max_tasks: Maximum number of tasks to analyze in detail (default: 100, use 0 for no limit)
         
     Returns:
         Dictionary containing epic details, detailed child tasks, and comprehensive AI insights
@@ -932,6 +939,9 @@ async def fr_get_epic_insights(
         
         # Get insights for large epics with task limit
         fr_get_epic_insights("FS-12345", max_tasks=50)
+        
+        # Get insights for all tasks (no limit)
+        fr_get_epic_insights("FS-12345", max_tasks=0)
     """
     try:
         # Validate environment variables
@@ -953,27 +963,12 @@ async def fr_get_epic_insights(
         except Exception as e:
             logging.warning(f"Could not fetch epic details: {str(e)}")
         
-        # Step 2: Get list of child tasks using filter
-        query_hash = [
-            {"condition": "parent_id", "operator": "is", "value": epic_key}
-        ]
-        
-        # Also check for epic_id relationship
-        try:
-            query_hash.append({"condition": "epic_id", "operator": "is", "value": epic_key})
-        except Exception:
-            pass
-        
-        # Get child task list with basic info
-        filter_params = {
-            "query_hash": query_hash,
-            "project_identifier": project_identifier,
-            "page": 1,
-            "per_page": max_tasks or 100,
-            "include": "custom_field,owner,priority,status"
-        }
-        
-        child_tasks_response = await _filter_tasks_internal(**filter_params)
+        # Step 2: Get list of child tasks using optimized epic filtering
+        # fr_filter_epics now only accepts parent_key and project_identifier
+        child_tasks_response = await _filter_epics_internal(
+            parent_key=str(epic_key),
+            project_identifier=project_identifier
+        )
         
         if "error" in child_tasks_response:
             return child_tasks_response
@@ -991,7 +986,7 @@ async def fr_get_epic_insights(
         # Step 3: Fetch detailed information for each child task (if requested)
         detailed_child_tasks = []
         if fetch_detailed_tasks and basic_child_tasks:
-            limited_tasks = basic_child_tasks[:max_tasks] if max_tasks else basic_child_tasks
+            limited_tasks = basic_child_tasks[:max_tasks] if max_tasks > 0 else basic_child_tasks
             
             logging.info(f"Fetching detailed information for {len(limited_tasks)} tasks...")
             
@@ -1024,7 +1019,7 @@ async def fr_get_epic_insights(
                     detailed_child_tasks.append(task)
         else:
             # Use basic task information
-            detailed_child_tasks = basic_child_tasks[:max_tasks] if max_tasks else basic_child_tasks
+            detailed_child_tasks = basic_child_tasks[:max_tasks] if max_tasks > 0 else basic_child_tasks
         
         # Step 4: Generate comprehensive AI insights
         ai_insights = _generate_epic_insights(epic_details, detailed_child_tasks)
@@ -1422,7 +1417,7 @@ def _find_section_by_name(sections: List[Dict[str, Any]], target_name: str) -> O
     for section in sections:
         section_name = section.get("name")
         if section_name and str(section_name).strip().lower() == target_lower:
-            section_id = section.get("id")
+                section_id = section.get("id")
             return section_id if isinstance(section_id, int) else None
     
     return None
@@ -1454,7 +1449,7 @@ async def _fetch_sections_at_level(
     # Build URL based on hierarchy level
     if parent_section_id is None:
         url = f"{base_url}/{project_identifier}/sections"
-    else:
+                    else:
         url = f"{base_url}/{project_identifier}/sections/{parent_section_id}/sections"
     
     # Fetch and parse response
@@ -2121,6 +2116,88 @@ async def fr_filter_tasks(
     except Exception as e:
         return create_error_response(f"Failed to filter tasks: {str(e)}")
 
+async def fr_filter_epics(
+    parent_key: str,
+    project_identifier: Optional[Union[int, str]] = None
+) -> Any:
+    """Internal helper: Filter epic-related tasks by parent key with optimized defaults for Freshservice project.
+    
+    This internal method accepts ONLY epic keys (like "FS-12345"), gets the epic details to extract the numeric ID,
+    and then automatically generates the proper query format for filtering child tasks
+    with pre-configured defaults optimized for the Freshservice project (filter_id=102776).
+    
+    NOTE: This is an internal helper function (not exposed as MCP tool) for use by other methods.
+    
+    Process:
+    1. Get epic details using the provided key
+    2. Extract the numeric epic ID from the response  
+    3. Generate query format using the numeric parent_id
+    
+    Automatically generates the following query format:
+    - filter_id: 102776
+    - include: custom_field,owner,priority,status
+    - page: 1
+    - per_page: 100
+    - query_hash[0][condition]: parent_id
+    - query_hash[0][operator]: is_in
+    - query_hash[0][value][]: <numeric_parent_id>
+    - sort: display_id
+    - sort_type: desc
+    
+    Args:
+        parent_key: Parent epic key to filter child tasks (required, e.g., "FS-12345")
+        project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
+        
+    Returns:
+        Filtered list of tasks under the specified parent epic or error response
+    """
+    
+    try:
+        # Step 1: Get the epic details using the key to extract numeric ID
+        epic_response = await _get_task_internal(project_identifier, parent_key)
+        
+        if "error" in epic_response:
+            return create_error_response(f"Failed to get epic details: {epic_response.get('error', 'Unknown error')}")
+        
+        # Step 2: Extract the numeric ID from the epic response
+        epic_id = None
+        if isinstance(epic_response, dict):
+            # Try different possible paths for the ID
+            if "issue" in epic_response and isinstance(epic_response["issue"], dict):
+                epic_id = epic_response["issue"].get("id")
+            elif "id" in epic_response:
+                epic_id = epic_response["id"]
+        
+        if epic_id is None:
+            return create_error_response(f"Could not extract numeric ID from epic response for key: {parent_key}")
+        
+        logging.info(f"Successfully extracted epic ID {epic_id} from key {parent_key}")
+        
+        # Step 3: Build the standardized query_hash format using numeric ID
+        query_hash = [
+            {
+                "condition": "parent_id",
+                "operator": "is_in", 
+                "value": [epic_id]  # Use numeric ID wrapped in array for is_in operator
+            }
+        ]
+        
+        # Step 4: Call fr_filter_tasks with the pre-configured defaults
+        return await fr_filter_tasks(
+            project_identifier=project_identifier,
+            query_hash=query_hash,
+            filter_id=102776,  # Default for Freshservice project
+            include="custom_field,owner,priority,status",  # Default includes
+            page=1,  # Default page
+            per_page=100,  # Default per_page
+            sort="display_id",  # Default sort
+            sort_type="desc"  # Default sort_type
+        )
+        
+    except Exception as e:
+        return create_error_response(f"Failed to filter epics: {str(e)}")
+
+
 @mcp.tool()
 async def fr_get_sprint_by_name(
     project_identifier: Optional[Union[int, str]] = None,
@@ -2374,35 +2451,28 @@ async def _get_testcase_fields_mapping(
 
 
 def _generate_epic_insights(epic_details: Dict[str, Any], child_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Generate comprehensive AI insights for an epic and its child tasks.
+    """Generate simplified AI insights for an epic and its child tasks.
     
     Args:
         epic_details: Epic/parent task details
         child_tasks: List of detailed child task objects
         
     Returns:
-        Dictionary containing comprehensive epic insights and analysis
+        Dictionary containing concise epic insights
     """
     total_tasks = len(child_tasks)
     
     if total_tasks == 0:
         return {
-            "summary": "This epic has no child tasks yet.",
-            "total_tasks": 0,
-            "insights": ["Consider breaking down the epic into actionable tasks."],
-            "recommendations": ["Define clear deliverables and create corresponding tasks."],
-            "risk_factors": ["No tasks defined - epic scope unclear"]
+            "summary": "Epic has no child tasks.",
+            "insights": ["Break down epic into actionable tasks."],
+            "recommendations": ["Define clear deliverables."]
         }
     
-    # Initialize analysis counters
+    # Analyze task statuses and assignees
     status_counts = {}
-    priority_counts = {}
     assignee_counts = {}
-    git_pr_info = {"open_prs": 0, "merged_prs": 0, "branches": [], "commits": []}
-    date_info = {"start_dates": [], "due_dates": [], "creation_dates": []}
-    effort_info = {"story_points": 0, "estimated_hours": 0}
     
-    # Analyze each task in detail
     for task in child_tasks:
         task_data = task.get("issue", {}) if "issue" in task else task
         
@@ -2411,65 +2481,10 @@ def _generate_epic_insights(epic_details: Dict[str, Any], child_tasks: List[Dict
         status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
         status_counts[status_name] = status_counts.get(status_name, 0) + 1
         
-        # Priority analysis
-        priority = task_data.get("priority", {})
-        priority_name = priority.get("name", "Unknown") if isinstance(priority, dict) else str(priority)
-        priority_counts[priority_name] = priority_counts.get(priority_name, 0) + 1
-        
         # Assignee analysis
         owner = task_data.get("owner", {})
         owner_name = owner.get("name", "Unassigned") if isinstance(owner, dict) else "Unassigned"
         assignee_counts[owner_name] = assignee_counts.get(owner_name, 0) + 1
-        
-        # Git/PR analysis from custom fields and description
-        custom_fields = task_data.get("custom_field", {})
-        description = task_data.get("description", "")
-        
-        # Look for PR references in description and custom fields
-        import re
-        pr_patterns = [
-            r'PR[:\s#]*(\d+)',
-            r'pull request[:\s#]*(\d+)',
-            r'github\.com/[^/]+/[^/]+/pull/(\d+)',
-            r'\/pull\/(\d+)'
-        ]
-        
-        for pattern in pr_patterns:
-            matches = re.findall(pattern, description, re.IGNORECASE)
-            for match in matches:
-                if "open" in description.lower() or "pending" in description.lower():
-                    git_pr_info["open_prs"] += 1
-                else:
-                    git_pr_info["merged_prs"] += 1
-        
-        # Look for branch references
-        branch_patterns = [
-            r'branch[:\s]*([a-zA-Z0-9\-_/]+)',
-            r'feature/([a-zA-Z0-9\-_/]+)',
-            r'bugfix/([a-zA-Z0-9\-_/]+)'
-        ]
-        
-        for pattern in branch_patterns:
-            matches = re.findall(pattern, description, re.IGNORECASE)
-            git_pr_info["branches"].extend(matches)
-        
-        # Date analysis
-        if task_data.get("start_date"):
-            date_info["start_dates"].append(task_data["start_date"])
-        if task_data.get("due_by"):
-            date_info["due_dates"].append(task_data["due_by"])
-        if task_data.get("created_at"):
-            date_info["creation_dates"].append(task_data["created_at"])
-        
-        # Effort analysis
-        story_points = task_data.get("story_points", 0) or 0
-        effort_info["story_points"] += story_points
-        
-        # Look for time estimates in custom fields
-        for field_name, field_value in custom_fields.items():
-            if "hour" in field_name.lower() or "time" in field_name.lower():
-                if isinstance(field_value, (int, float)):
-                    effort_info["estimated_hours"] += field_value
     
     # Calculate completion rate
     completed_statuses = ["done", "completed", "resolved", "closed", "finished"]
@@ -2477,193 +2492,93 @@ def _generate_epic_insights(epic_details: Dict[str, Any], child_tasks: List[Dict
                         if any(comp in status.lower() for comp in completed_statuses))
     completion_rate = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
     
-    # Calculate timeline insights
-    timeline_insights = {}
-    if date_info["start_dates"]:
-        earliest_start = min(date_info["start_dates"])
-        timeline_insights["earliest_start"] = earliest_start
-    if date_info["due_dates"]:
-        latest_due = max(date_info["due_dates"])
-        timeline_insights["latest_due"] = latest_due
-    if date_info["creation_dates"]:
-        first_created = min(date_info["creation_dates"])
-        latest_created = max(date_info["creation_dates"])
-        timeline_insights["creation_span"] = {"first": first_created, "latest": latest_created}
-    
-    # Generate insights
+    # Generate simple insights
     insights = []
     recommendations = []
-    risk_factors = []
     
-    # Completion insights
-    if completion_rate < 25:
-        insights.append(f"Epic is in early stages with {completion_rate:.1f}% completion rate.")
-        recommendations.append("Focus on task prioritization and clear requirements.")
-    elif completion_rate < 75:
-        insights.append(f"Epic is progressing well with {completion_rate:.1f}% completion rate.")
-        recommendations.append("Monitor blockers and maintain development momentum.")
+    # Progress assessment
+    if completion_rate >= 80:
+        insights.append(f"Epic is nearly complete ({completion_rate:.0f}% done).")
+        recommendations.append("Focus on final testing and deployment.")
+    elif completion_rate >= 50:
+        insights.append(f"Epic is progressing well ({completion_rate:.0f}% done).")
+        recommendations.append("Monitor blockers and maintain momentum.")
     else:
-        insights.append(f"Epic is nearly complete with {completion_rate:.1f}% completion rate.")
-        recommendations.append("Focus on final testing and deployment preparation.")
+        insights.append(f"Epic is in early stages ({completion_rate:.0f}% done).")
+        recommendations.append("Focus on task prioritization.")
     
-    # Team distribution insights
-    if len(assignee_counts) == 1 and "Unassigned" not in assignee_counts:
-        insights.append("Epic is handled by a single developer.")
-        risk_factors.append("Single point of failure - no backup coverage")
-        recommendations.append("Consider involving additional team members for knowledge sharing.")
-    elif len(assignee_counts) > 5:
-        insights.append(f"Epic involves {len(assignee_counts)} team members.")
-        risk_factors.append("High coordination overhead with many contributors")
-        recommendations.append("Ensure clear communication channels and regular sync-ups.")
-    elif "Unassigned" in assignee_counts and assignee_counts["Unassigned"] > total_tasks * 0.3:
-        unassigned_pct = (assignee_counts["Unassigned"] / total_tasks) * 100
-        insights.append(f"{unassigned_pct:.1f}% of tasks are unassigned.")
-        risk_factors.append("High number of unassigned tasks may cause delays")
-        recommendations.append("Assign ownership to all tasks for better accountability.")
+    # Team distribution
+    team_size = len([name for name in assignee_counts.keys() if name != "Unassigned"])
+    unassigned_count = assignee_counts.get("Unassigned", 0)
     
-    # Git/PR insights  
-    if git_pr_info["open_prs"] > 0:
-        insights.append(f"Found {git_pr_info['open_prs']} open pull requests in development.")
-        if git_pr_info["open_prs"] > 3:
-            risk_factors.append("High number of open PRs may indicate review bottlenecks")
-            recommendations.append("Prioritize code reviews to prevent merge conflicts.")
+    if team_size == 1:
+        insights.append("Single developer handling all tasks.")
+        recommendations.append("Consider team backup for knowledge sharing.")
+    elif unassigned_count > 0:
+        insights.append(f"{unassigned_count} tasks unassigned.")
+        recommendations.append("Assign ownership for better accountability.")
     
-    if git_pr_info["merged_prs"] > 0:
-        insights.append(f"Development is active with {git_pr_info['merged_prs']} merged pull requests.")
-        
-    # Priority distribution insights
-    high_priority_tasks = priority_counts.get("High", 0) + priority_counts.get("Critical", 0)
-    if high_priority_tasks > total_tasks * 0.5:
-        insights.append("Over half the tasks are high/critical priority.")
-        risk_factors.append("Too many high-priority tasks may indicate scope creep")
-        recommendations.append("Re-evaluate task priorities and consider epic scope reduction.")
-    
-    # Timeline risk assessment
-    if timeline_insights.get("latest_due"):
-        from datetime import datetime, timezone
-        try:
-            due_date = datetime.fromisoformat(timeline_insights["latest_due"].replace('Z', '+00:00'))
-            now = datetime.now(timezone.utc)
-            days_remaining = (due_date - now).days
-            
-            if days_remaining < 0:
-                risk_factors.append(f"Epic is overdue by {abs(days_remaining)} days")
-                recommendations.append("Immediate attention required - reassess scope and resources.")
-            elif days_remaining < 7:
-                risk_factors.append(f"Epic due in {days_remaining} days with {completion_rate:.1f}% completion")
-                recommendations.append("Consider scope reduction or deadline extension.")
-        except Exception:
-            pass
-    
-    # Generate summary
-    summary_parts = [f"Epic contains {total_tasks} tasks with {completion_rate:.1f}% completion rate."]
-    if len(assignee_counts) > 1:
-        summary_parts.append(f"Work is distributed across {len(assignee_counts)} team members.")
-    if git_pr_info["open_prs"] > 0:
-        summary_parts.append(f"{git_pr_info['open_prs']} pull requests are currently open.")
+    # Simple summary
+    summary = f"{completed_tasks}/{total_tasks} tasks completed."
+    if team_size > 0:
+        summary += f" {team_size} team member{'s' if team_size > 1 else ''} involved."
     
     return {
-        "summary": " ".join(summary_parts),
-        "total_tasks": total_tasks,
-        "completion_rate": f"{completion_rate:.1f}%",
+        "summary": summary,
         "insights": insights,
-        "recommendations": recommendations,
-        "risk_factors": risk_factors,
-        "metrics": {
-            "status_distribution": status_counts,
-            "priority_distribution": priority_counts,
-            "assignee_distribution": assignee_counts,
-            "git_development": git_pr_info,
-            "effort_summary": effort_info,
-            "timeline": timeline_insights
-        }
+        "recommendations": recommendations
     }
 
 
 def _generate_testrun_insights(test_run: Dict[str, Any], users: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Generate simplified AI insights for a test run.
+    """Generate concise AI insights for a test run.
     
     Args:
         test_run: Test run data from API
         users: List of users associated with the test run
         
     Returns:
-        Dictionary containing streamlined test run insights
+        Dictionary containing minimal test run insights
     """
     progress = test_run.get("progress", {})
     total_tests = sum(progress.values())
     
     if total_tests == 0:
         return {
-            "summary": "Empty test run - no test cases added yet.",
-            "quality_score": "No Data",
-            "recommendations": ["Add test cases to begin quality assessment"]
+            "summary": "No test cases in run.",
+            "recommendations": ["Add test cases to start testing."]
         }
     
     # Core metrics
     passed = progress.get("passed", 0)
     failed = progress.get("failed", 0)
-    blocked = progress.get("blocked", 0)
     not_run = progress.get("not_run", 0)
     
     executed = passed + failed
-    pass_rate = (passed / total_tests) * 100 if total_tests > 0 else 0
     completion_rate = (executed / total_tests) * 100 if total_tests > 0 else 0
     
-    # Quality assessment
-    if completion_rate >= 90:
-        if pass_rate >= 95:
-            quality_score = "Excellent"
-        elif pass_rate >= 85:
-            quality_score = "Good"
-        elif pass_rate >= 70:
-            quality_score = "Fair"
-        else:
-            quality_score = "Poor"
-    else:
-        quality_score = "In Progress"
-    
-    # Generate concise summary
+    # Simple summary
     if completion_rate == 100:
+        summary = f"{passed}/{total_tests} tests completed."
         if failed == 0:
-            summary = f"All {total_tests} tests passed successfully! 🎉"
+            summary += " All passed! ✅"
         else:
-            summary = f"{passed}/{total_tests} tests passed ({pass_rate:.0f}%). {failed} failures need attention."
+            summary += f" {failed} failed."
     else:
-        summary = f"{executed}/{total_tests} tests executed ({completion_rate:.0f}% complete). {passed} passed, {failed} failed."
+        summary = f"{executed}/{total_tests} tests executed ({completion_rate:.0f}% complete)."
     
     # Key recommendations
     recommendations = []
     if failed > 0:
-        recommendations.append(f"Fix {failed} failing test cases")
-    if blocked > 0:
-        recommendations.append(f"Resolve {blocked} blocked tests")
-    if not_run > 0 and completion_rate < 100:
-        recommendations.append(f"Execute remaining {not_run} test cases")
-    if not recommendations:
-        recommendations.append("Test run is progressing well")
-    
-    # Get team info efficiently
-    creator_name = "Unknown"
-    if users and test_run.get("creator_id"):
-        creator = next((u.get("name") for u in users if u.get("id") == test_run.get("creator_id")), None)
-        if creator:
-            creator_name = creator
+        recommendations.append("Fix failing tests.")
+    elif not_run > 0:
+        recommendations.append("Execute remaining tests.")
+    else:
+        recommendations.append("Test run looks good.")
     
     return {
         "summary": summary,
-        "quality_score": quality_score,
-        "recommendations": recommendations,
-        "metrics": {
-            "total_tests": total_tests,
-            "passed": passed,
-            "failed": failed,
-            "blocked": blocked,
-            "not_run": not_run,
-            "pass_rate": f"{pass_rate:.1f}%",
-            "completion_rate": f"{completion_rate:.1f}%"
-        },
-        "created_by": creator_name
+        "recommendations": recommendations
     }
 
 
@@ -3160,7 +3075,7 @@ async def fr_testcase_filter_summary(
     query_hash: Optional[List[Dict[str, Any]]] = None,
     
     # Additional API parameters
-    filter_id: Optional[Union[int, str]] = None,
+    filter_id: Optional[Union[int, str]] = 102776,
     include: Optional[str] = None,
     page: Optional[int] = 1,
     per_page: Optional[int] = 100,
@@ -3276,7 +3191,7 @@ async def fr_testcase_filter_summary(
         base_url = env_data["base_url"]
         headers = env_data["headers"]
         client = get_http_client()
-        
+
         logging.info("=== Starting testcase filter summary with explicit field mapping ===")
         
         # Step 1: Get testcase form fields to understand field name-to-ID mappings
@@ -3583,12 +3498,12 @@ async def fr_testcase_filter_summary(
 
         # Convert filter_rules to query_hash format using explicit field mappings
         logging.info("Step 5: Processing filter_rules using explicit field mappings")
-        for i, rule in enumerate(filter_rules):
-            if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                condition = rule["condition"]
-                operator = rule["operator"]
-                value = rule["value"]
-                
+            for i, rule in enumerate(filter_rules):
+                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                    condition = rule["condition"]
+                    operator = rule["operator"]
+                    value = rule["value"]
+                    
                 # Map field label to condition name if needed (case-insensitive)
                 condition_lower = condition.lower()
                 if condition_lower in field_label_to_condition_map:
