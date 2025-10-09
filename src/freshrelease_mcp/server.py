@@ -845,13 +845,13 @@ async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key:
 @mcp.tool()
 @performance_monitor("fr_get_all_tasks")
 async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None) -> Dict[str, Any]:
-    """Get all tasks/issues for a project.
+    """Get tasks/issues for a project.
     
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         
     Returns:
-        List of tasks or error response
+        List of tasks or error response (may be paginated by API - check response for total counts)
     """
     try:
         # Validate environment variables
@@ -867,6 +867,32 @@ async def fr_get_all_tasks(project_identifier: Optional[Union[int, str]] = None)
         return create_error_response(f"Failed to get all tasks: {str(e)}")
 
 
+# Internal helper functions (not exposed as MCP tools)
+async def _get_task_internal(project_identifier: Optional[Union[int, str]] = None, key: Union[int, str] = None) -> Dict[str, Any]:
+    """Internal helper for getting task details without exposing as MCP tool."""
+    try:
+        # Validate environment variables
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        
+        if key is None:
+            return create_error_response("Task key is required")
+
+        url = f"{base_url}/{project_id}/issues/{key}"
+        return await make_api_request("GET", url, headers)
+
+    except Exception as e:
+        return create_error_response(f"Failed to get task: {str(e)}")
+
+
+async def _filter_tasks_internal(**kwargs) -> Any:
+    """Internal helper for filtering tasks without exposing as MCP tool."""
+    # Call the actual fr_filter_tasks implementation but without the @mcp.tool decorator
+    return await fr_filter_tasks(**kwargs)
+
+
 @mcp.tool()
 @performance_monitor("fr_get_epic_insights")
 async def fr_get_epic_insights(
@@ -877,7 +903,7 @@ async def fr_get_epic_insights(
 ) -> Dict[str, Any]:
     """Get comprehensive AI-powered insights for an epic including detailed task analysis, git development status, and risk assessment.
     
-    This method fetches an epic and all its child tasks with full details, then provides intelligent
+    This method fetches an epic and its child tasks (up to max_tasks limit), then provides intelligent
     analysis including completion rates, team distribution, git/PR status, timeline risks, and actionable recommendations.
     
     Args:
@@ -917,7 +943,7 @@ async def fr_get_epic_insights(
         # Step 1: Get the epic/parent task details
         epic_details = None
         try:
-            epic_response = await fr_get_task(project_identifier, epic_key)
+            epic_response = await _get_task_internal(project_identifier, epic_key)
             if "error" not in epic_response:
                 epic_details = epic_response
                 epic_title = epic_details.get('issue', {}).get('title', 'N/A')
@@ -947,7 +973,7 @@ async def fr_get_epic_insights(
             "include": "custom_field,owner,priority,status"
         }
         
-        child_tasks_response = await fr_filter_tasks(**filter_params)
+        child_tasks_response = await _filter_tasks_internal(**filter_params)
         
         if "error" in child_tasks_response:
             return child_tasks_response
@@ -978,7 +1004,7 @@ async def fr_get_epic_insights(
                     
                     if task_key:
                         # Fetch detailed task information
-                        detailed_task_response = await fr_get_task(project_identifier, task_key)
+                        detailed_task_response = await _get_task_internal(project_identifier, task_key)
                         if "error" not in detailed_task_response:
                             detailed_child_tasks.append(detailed_task_response)
                         else:
@@ -1049,15 +1075,25 @@ async def fr_get_issue_type_by_name(project_identifier: Optional[Union[int, str]
         url = f"{base_url}/{project_id}/issue_types"
         data = await make_api_request("GET", url, headers)
         
-        # Expecting a list of objects with a 'label' property
+        # Handle both response formats: direct list or wrapped in "issue_types" key
+        issue_types = []
         if isinstance(data, list):
+            issue_types = data
+        elif isinstance(data, dict) and "issue_types" in data:
+            issue_types = data["issue_types"]
+        else:
+            return create_error_response("Unexpected response structure for issue types", data)
+        
+        # Search for the issue type by label
+        if issue_types:
             target = issue_type_name.strip().lower()
-            for item in data:
+            for item in issue_types:
                 label = str(item.get("label", "")).strip().lower()
                 if label == target:
                     return item
             return create_error_response(f"Issue type '{issue_type_name}' not found")
-        return create_error_response("Unexpected response structure for issue types", data)
+        
+        return create_error_response("No issue types found in response")
 
     except Exception as e:
         return create_error_response(f"Failed to get issue type: {str(e)}")
@@ -1442,13 +1478,13 @@ async def _fetch_sections_at_level(
 
 @mcp.tool()
 async def fr_list_testcases(project_identifier: Optional[Union[int, str]] = None) -> Any:
-    """List all test cases in a project.
+    """List test cases in a project.
 
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
         
     Returns:
-        List of test cases or error response
+        List of test cases or error response (may be paginated by API - check response for total counts)
     """
     try:
         env_data = validate_environment()
@@ -2635,17 +2671,18 @@ def _add_ai_summary_to_testcase_result(result: Dict[str, Any], filter_criteria: 
     """Add AI summary to testcase API result.
     
     Args:
-        result: API response containing test cases
+        result: API response containing test cases and pagination metadata
         filter_criteria: Applied filter criteria for context
         
     Returns:
-        Enhanced result with AI summary or original result if error
+        Enhanced result with pagination-aware AI summary or original result if error
     """
     if "error" in result:
         return result
         
     test_cases = result.get("test_cases", [])
-    ai_summary = _generate_testcase_summary(test_cases, filter_criteria)
+    # Pass full result to access pagination metadata (total_count, total_pages, etc.)
+    ai_summary = _generate_testcase_summary(test_cases, filter_criteria, result)
     
     return {
         "test_cases": test_cases,
@@ -2654,25 +2691,35 @@ def _add_ai_summary_to_testcase_result(result: Dict[str, Any], filter_criteria: 
     }
 
 
-def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate AI-powered summary of filtered test cases.
+def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria: Dict[str, Any], api_result: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Generate pagination-aware AI-powered summary of filtered test cases.
     
     Args:
-        test_cases: List of filtered test case objects
+        test_cases: List of test case objects (current page)
         filter_criteria: Applied filter criteria for context
+        api_result: Full API response with pagination metadata
         
     Returns:
-        Dictionary containing comprehensive summary and insights
+        Dictionary containing comprehensive summary and insights with pagination awareness
     """
     if not test_cases:
         return {
             "summary": "No test cases found matching the specified criteria.",
             "total_count": 0,
+            "page_count": 0,
             "insights": ["Consider broadening your filter criteria to find relevant test cases."],
             "recommendations": ["Review section structure and test case organization."]
         }
     
-    total_count = len(test_cases)
+    # Extract pagination metadata from API response
+    current_page_count = len(test_cases)
+    total_count = api_result.get("total_count", current_page_count) if api_result else current_page_count
+    current_page = filter_criteria.get("page", 1)
+    per_page = filter_criteria.get("per_page", 100)
+    total_pages = api_result.get("total_pages") if api_result else None
+    
+    # Calculate if this is a paginated result
+    is_paginated_result = total_count > current_page_count or (total_pages and total_pages > 1)
     
     # Analyze test case distribution
     severity_counts = {}
@@ -2716,69 +2763,112 @@ def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria
     insights = []
     recommendations = []
     
+    # Pagination-aware insights
+    page_qualifier = " (on this page)" if is_paginated_result else ""
+    
     # Coverage insights
-    if total_count < 10:
-        insights.append(f"Limited test coverage with only {total_count} test cases.")
-        recommendations.append("Consider expanding test case coverage for better quality assurance.")
-    elif total_count > 100:
-        insights.append(f"Comprehensive test suite with {total_count} test cases.")
-        recommendations.append("Consider organizing test cases into logical groups for better maintainability.")
+    if is_paginated_result:
+        insights.append(f"Dataset contains {total_count} total test cases. Analyzing {current_page_count} results from page {current_page}.")
+        recommendations.append("Use pagination parameters to analyze the complete dataset for comprehensive insights.")
+    else:
+        if total_count < 10:
+            insights.append(f"Limited test coverage with only {total_count} test cases.")
+            recommendations.append("Consider expanding test case coverage for better quality assurance.")
+        elif total_count > 100:
+            insights.append(f"Comprehensive test suite with {total_count} test cases.")
+            recommendations.append("Consider organizing test cases into logical groups for better maintainability.")
     
-    # Automation insights
-    automation_rate = (automation_status["automated"] / total_count) * 100 if total_count > 0 else 0
-    if automation_rate < 30:
-        insights.append(f"Low automation rate ({automation_rate:.1f}%). Most tests are manual.")
-        recommendations.append("Prioritize test automation to improve execution efficiency.")
-    elif automation_rate > 70:
-        insights.append(f"High automation rate ({automation_rate:.1f}%). Well-automated test suite.")
-        recommendations.append("Maintain automation coverage and keep tests up-to-date.")
+    # Automation insights (current page analysis)
+    page_automation_rate = (automation_status["automated"] / current_page_count) * 100 if current_page_count > 0 else 0
+    if is_paginated_result:
+        insights.append(f"Current page automation rate: {page_automation_rate:.1f}%{page_qualifier}.")
+        recommendations.append("Review complete dataset to get accurate automation metrics across all test cases.")
+    else:
+        if page_automation_rate < 30:
+            insights.append(f"Low automation rate ({page_automation_rate:.1f}%). Most tests are manual.")
+            recommendations.append("Prioritize test automation to improve execution efficiency.")
+        elif page_automation_rate > 70:
+            insights.append(f"High automation rate ({page_automation_rate:.1f}%). Well-automated test suite.")
+            recommendations.append("Maintain automation coverage and keep tests up-to-date.")
     
-    # Distribution insights
-    if len(section_counts) == 1:
-        insights.append("Test cases are concentrated in a single section.")
-        recommendations.append("Ensure test coverage across different application areas.")
-    elif len(section_counts) > 5:
-        insights.append(f"Test cases span across {len(section_counts)} different sections.")
-        recommendations.append("Review section organization for optimal test management.")
+    # Distribution insights (current page analysis)
+    if is_paginated_result:
+        insights.append(f"Current page shows test cases across {len(section_counts)} sections{page_qualifier}.")
+        if len(creator_counts) > 0:
+            insights.append(f"Test cases created by {len(creator_counts)} different team members{page_qualifier}.")
+    else:
+        # Distribution insights for complete dataset
+        if len(section_counts) == 1:
+            insights.append("Test cases are concentrated in a single section.")
+            recommendations.append("Ensure test coverage across different application areas.")
+        elif len(section_counts) > 5:
+            insights.append(f"Test cases span across {len(section_counts)} different sections.")
+            recommendations.append("Review section organization for optimal test management.")
+        
+        # Creator diversity for complete dataset
+        if len(creator_counts) == 1:
+            insights.append("All test cases created by a single person.")
+            recommendations.append("Encourage team collaboration in test case creation.")
+        elif len(creator_counts) > 5:
+            insights.append(f"Test cases created by {len(creator_counts)} different team members.")
+            recommendations.append("Maintain consistent quality standards across different creators.")
     
-    # Creator diversity
-    if len(creator_counts) == 1:
-        insights.append("All test cases created by a single person.")
-        recommendations.append("Encourage team collaboration in test case creation.")
-    elif len(creator_counts) > 5:
-        insights.append(f"Test cases created by {len(creator_counts)} different team members.")
-        recommendations.append("Maintain consistent quality standards across different creators.")
+    # Generate pagination-aware summary text
+    if is_paginated_result:
+        summary_parts = [f"Found {total_count} total test cases matching your criteria."]
+        summary_parts.append(f"Showing {current_page_count} results from page {current_page} (of {total_pages or '?'} pages).")
+        
+        # Analysis is based on current page only
+        if automation_status["automated"] > 0:
+            summary_parts.append(f"On this page: {automation_status['automated']} are automated")
+        if automation_status["manual"] > 0:
+            summary_parts.append(f"{automation_status['manual']} are manual")
+            
+        summary = " ".join(summary_parts) + ". Note: Analysis based on current page only."
+    else:
+        # Complete dataset analysis
+        summary_parts = [f"Found {total_count} test cases matching your criteria."]
+        
+        if automation_status["automated"] > 0:
+            summary_parts.append(f"{automation_status['automated']} are automated")
+        if automation_status["manual"] > 0:
+            summary_parts.append(f"{automation_status['manual']} are manual")
+        
+        summary = " ".join(summary_parts) + "."
     
-    # Generate summary text
-    summary_parts = [f"Found {total_count} test cases matching your criteria."]
-    
-    if automation_status["automated"] > 0:
-        summary_parts.append(f"{automation_status['automated']} are automated")
-    if automation_status["manual"] > 0:
-        summary_parts.append(f"{automation_status['manual']} are manual")
-    
-    summary = " ".join(summary_parts) + "."
-    
-    # Risk assessment
+    # Risk assessment (with pagination awareness)
     risk_factors = []
-    if automation_rate < 50:
-        risk_factors.append("Low automation coverage may impact release velocity")
-    if len(creator_counts) == 1:
-        risk_factors.append("Single point of knowledge risk")
-    if total_count < 5:
-        risk_factors.append("Insufficient test coverage")
+    if is_paginated_result:
+        risk_factors.append("Analysis is based on current page only - complete dataset review needed for accurate risk assessment")
+        if page_automation_rate < 50:
+            risk_factors.append(f"Current page shows low automation rate ({page_automation_rate:.1f}%) - verify across complete dataset")
+    else:
+        if page_automation_rate < 50:
+            risk_factors.append("Low automation coverage may impact release velocity")
+        if len(creator_counts) == 1:
+            risk_factors.append("Single point of knowledge risk")
+        if total_count < 5:
+            risk_factors.append("Insufficient test coverage")
         
     return {
         "summary": summary,
         "total_count": total_count,
+        "page_count": current_page_count,
+        "is_paginated": is_paginated_result,
+        "pagination": {
+            "current_page": current_page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+            "showing_results": f"{current_page_count} of {total_count}"
+        },
         "insights": insights,
         "recommendations": recommendations,
         "risk_factors": risk_factors,
         "metrics": {
-            "automation_rate": f"{automation_rate:.1f}%",
-            "sections_covered": len(section_counts),
-            "contributors": len(creator_counts),
-            "status_distribution": len(status_counts)
+            "page_automation_rate": f"{page_automation_rate:.1f}%",
+            "sections_covered_on_page": len(section_counts),
+            "contributors_on_page": len(creator_counts),
+            "status_distribution_on_page": len(status_counts)
         },
         "filter_applied": filter_criteria
     }
@@ -2808,10 +2898,13 @@ async def _resolve_testcase_field_value(
     client: httpx.AsyncClient,
     base_url: str,
     headers: Dict[str, str],
-    severity_options: Optional[Dict[str, int]] = None,
-    section_options: Optional[Dict[str, int]] = None
+    field_metadata: Optional[Dict[str, Any]] = None,
+    form_field_options: Optional[Dict[str, Dict[str, int]]] = None
 ) -> Any:
-    """Resolve testcase field values to IDs if needed.
+    """Intelligently resolve testcase field values based on form field metadata and expected types.
+    
+    This enhanced version uses form field metadata to understand the expected format for each field
+    and automatically converts user-provided values to the correct format.
     
     Args:
         condition: The field condition (e.g., "creator_id", "section_id")
@@ -2820,54 +2913,241 @@ async def _resolve_testcase_field_value(
         client: HTTP client instance
         base_url: API base URL
         headers: Request headers
-        severity_options: Optional mapping of severity names to IDs from form fields
-        section_options: Optional mapping of section names to IDs from form fields
+        field_metadata: Metadata about field types and expected formats from form fields
+        form_field_options: Pre-extracted options for all fields (severity, section, etc.)
         
     Returns:
         Resolved value or original value if no resolution needed
     """
     try:
-        # Fields that need resolution
-        if condition == "creator_id" and isinstance(value, str) and not value.isdigit():
-            # Resolve user name/email to ID
-            logging.info(f"Resolving creator '{value}' to user ID")
-            user_result = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
-            if user_result and isinstance(user_result, int):
-                logging.info(f"Resolved creator '{value}' to ID {user_result}")
-                return user_result
-        elif condition == "severity_id" and isinstance(value, str) and severity_options and value.lower() in severity_options:
-            # Use explicit severity mapping from form fields (preferred method)
-            resolved_id = severity_options[value.lower()]
-            logging.info(f"Resolved severity '{value}' to ID {resolved_id} using form fields")
-            return resolved_id
-        elif condition == "section_id" and isinstance(value, str) and not value.isdigit():
-            # First try explicit section options if available, then fall back to generic resolution
-            if section_options and value.lower() in section_options:
-                resolved_id = section_options[value.lower()]
-                logging.info(f"Resolved section '{value}' to ID {resolved_id} using form fields")
-                return resolved_id
-            else:
-                # Fall back to generic section resolution
-                section_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
-                if section_result and isinstance(section_result, (int, dict)):
-                    resolved_id = section_result.get("id", section_result) if isinstance(section_result, dict) else section_result
-                    logging.info(f"Resolved section '{value}' to ID {resolved_id} using generic resolution")
+        # Get field metadata for this condition
+        field_info = field_metadata.get(condition, {}) if field_metadata else {}
+        field_type = field_info.get("type", "")
+        expected_format = field_info.get("expected_format", "")
+        
+        logging.info(f"Resolving field '{condition}' with value '{value}' (type: {field_type}, expected: {expected_format})")
+        
+        # Handle different field types based on their resolution strategy
+        resolution_strategy = field_info.get("resolution_strategy", "unknown")
+        
+        # 1. DROPDOWN FIELDS - Use choice IDs from form field choices
+        if resolution_strategy == "dropdown_choices":
+            if form_field_options and condition in form_field_options:
+                field_options = form_field_options[condition]
+                if isinstance(value, str) and value.lower().strip() in field_options:
+                    resolved_id = field_options[value.lower().strip()]
+                    logging.info(f"🎛️ DROPDOWN: Resolved {condition} '{value}' to choice ID '{resolved_id}'")
                     return resolved_id
+                else:
+                    # Log available choices for debugging
+                    available_choices = list(field_options.keys())[:5]
+                    logging.warning(f"⚠️ DROPDOWN: Value '{value}' not found in {condition} choices. Available: {available_choices}")
+                    return value  # Return original value if not found
+            
+            # Try alternative keys
+            field_name = field_info.get("original_name", "")
+            field_label = field_info.get("label", "").lower()
+            for alt_key in [field_name, field_label]:
+                if alt_key in form_field_options:
+                    field_options = form_field_options[alt_key]
+                    if isinstance(value, str) and value.lower().strip() in field_options:
+                        resolved_id = field_options[value.lower().strip()]
+                        logging.info(f"🎛️ DROPDOWN: Resolved {condition} '{value}' to choice ID '{resolved_id}' (via {alt_key})")
+                        return resolved_id
+        
+        # 2. SECTION FIELDS - Resolve section names to section IDs
+        elif resolution_strategy == "section_resolution":
+            if isinstance(value, str) and not value.isdigit():
+                # Try hierarchical section resolution (Parent > Child format)
+                if ">" in value:
+                    logging.info(f"🔗 SECTION: Attempting hierarchical resolution for '{value}'")
+                    try:
+                        section_result = await _resolve_section_hierarchy(value, project_id, client, base_url, headers)
+                        if section_result:
+                            logging.info(f"🔗 SECTION: Resolved hierarchical '{value}' to section ID {section_result}")
+                            return section_result
+                    except Exception as e:
+                        logging.warning(f"Hierarchical section resolution failed: {str(e)}")
+                
+                # Fall back to generic section name resolution
+                try:
+                    section_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "sections")
+                    if section_result and isinstance(section_result, (int, dict)):
+                        resolved_id = section_result.get("id", section_result) if isinstance(section_result, dict) else section_result
+                        logging.info(f"🔗 SECTION: Resolved '{value}' to section ID {resolved_id}")
+                        return resolved_id
+                except Exception as e:
+                    logging.warning(f"Section resolution failed: {str(e)}")
+            elif isinstance(value, (int, str)) and str(value).isdigit():
+                # Already an ID
+                return int(value)
+        
+        # 3. NO RESOLUTION FIELDS - Use value as-is (text fields, linked tasks)
+        elif resolution_strategy == "no_resolution":
+            logging.info(f"📝 NO_RESOLUTION: Using '{condition}' value '{value}' as-is")
+            return value
+        
+        # 4. SKIPPED FIELDS - Don't process these fields
+        elif resolution_strategy == "skip":
+            logging.info(f"⏭️ SKIP: Field '{condition}' marked for skipping, using value as-is")
+            return value
+        
+        # 5. SPECIAL CASE - Creator/User fields (not in form choices)
+        elif condition == "creator_id":
+            if isinstance(value, str) and not value.isdigit():
+                logging.info(f"👤 CREATOR: Resolving user '{value}' to ID")
+                user_result = await _resolve_user_name_to_id(value, project_id, client, base_url, headers)
+                if user_result and isinstance(user_result, int):
+                    logging.info(f"👤 CREATOR: Resolved '{value}' to user ID {user_result}")
+                    return user_result
+            elif isinstance(value, (int, str)) and str(value).isdigit():
+                # Already an ID
+                return int(value)
+        
+        # 5. FALLBACK - Field-specific legacy resolution
+        elif condition == "severity_id" and isinstance(value, str):
+            # Try to resolve severity by name using generic API
+            try:
+                severity_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "severities")
+                if severity_result and isinstance(severity_result, (int, dict)):
+                    resolved_id = severity_result.get("id", severity_result) if isinstance(severity_result, dict) else severity_result
+                    logging.info(f"Resolved severity '{value}' to ID {resolved_id}")
+                    return resolved_id
+            except Exception as e:
+                logging.warning(f"Severity resolution failed: {str(e)}")
+        
         elif condition == "test_case_type_id" and isinstance(value, str) and not value.isdigit():
             # Resolve test case type name to ID
-            type_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "test_case_types")
-            if type_result and isinstance(type_result, (int, dict)):
-                resolved_id = type_result.get("id", type_result) if isinstance(type_result, dict) else type_result
-                logging.info(f"Resolved test case type '{value}' to ID {resolved_id}")
-                return resolved_id
+            try:
+                type_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "test_case_types")
+                if type_result and isinstance(type_result, (int, dict)):
+                    resolved_id = type_result.get("id", type_result) if isinstance(type_result, dict) else type_result
+                    logging.info(f"Resolved test case type '{value}' to ID {resolved_id}")
+                    return resolved_id
+            except Exception as e:
+                logging.warning(f"Test case type resolution failed: {str(e)}")
         
-        # Return original value if no resolution needed
+        elif condition == "test_case_status_id" and isinstance(value, str) and not value.isdigit():
+            # Resolve test case status name to ID
+            try:
+                status_result = await _resolve_name_to_id_generic(value, project_id, client, base_url, headers, "test_case_statuses")
+                if status_result and isinstance(status_result, (int, dict)):
+                    resolved_id = status_result.get("id", status_result) if isinstance(status_result, dict) else status_result
+                    logging.info(f"Resolved test case status '{value}' to ID {resolved_id}")
+                    return resolved_id
+            except Exception as e:
+                logging.warning(f"Test case status resolution failed: {str(e)}")
+        
+        # Return original value if no resolution was performed or needed
+        logging.info(f"No resolution needed for '{condition}' with value '{value}' - returning as-is")
         return value
         
     except Exception as e:
         logging.warning(f"Failed to resolve testcase field '{condition}' value '{value}': {str(e)}")
         # Return original value if resolution fails
         return value
+
+
+async def _resolve_section_hierarchy(
+    hierarchy_path: str,
+    project_id: Union[int, str],
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: Dict[str, str]
+) -> Optional[int]:
+    """Resolve hierarchical section path (Parent > Child) to section ID.
+    
+    Args:
+        hierarchy_path: Section path like "Authentication > Login" or "UI > Forms > Input Fields"
+        project_id: Resolved project ID
+        client: HTTP client instance
+        base_url: API base URL
+        headers: Request headers
+        
+    Returns:
+        Section ID if found, None otherwise
+    """
+    try:
+        # Split the hierarchy path
+        path_parts = [part.strip() for part in hierarchy_path.split(">")]
+        if not path_parts:
+            return None
+            
+        logging.info(f"Resolving section hierarchy: {path_parts}")
+        
+        # Get all sections for the project
+        sections_url = f"{base_url}/{project_id}/sections"
+        response = await client.get(sections_url, headers=headers)
+        response.raise_for_status()
+        sections_data = response.json()
+        
+        # Handle nested response structure
+        sections_list = None
+        if isinstance(sections_data, list):
+            sections_list = sections_data
+        elif isinstance(sections_data, dict) and "sections" in sections_data:
+            sections_list = sections_data["sections"]
+        else:
+            logging.warning(f"Unexpected sections response format: {type(sections_data)}")
+            return None
+        
+        # Build a hierarchy map
+        def find_section_by_hierarchy(sections, path_parts, current_level=0):
+            if current_level >= len(path_parts):
+                return None
+                
+            target_name = path_parts[current_level].lower()
+            
+            for section in sections:
+                section_name = section.get("name", "").lower()
+                
+                # Check if this section matches the current level
+                if section_name == target_name:
+                    # If this is the final level, return the section ID
+                    if current_level == len(path_parts) - 1:
+                        return section.get("id")
+                    
+                    # Otherwise, look in child sections
+                    child_sections = section.get("sections", [])
+                    if child_sections:
+                        result = find_section_by_hierarchy(child_sections, path_parts, current_level + 1)
+                        if result:
+                            return result
+            
+            return None
+        
+        # Find the section ID using hierarchy
+        section_id = find_section_by_hierarchy(sections_list, path_parts)
+        if section_id:
+            logging.info(f"Found section ID {section_id} for hierarchy '{hierarchy_path}'")
+            return section_id
+        
+        # If hierarchical search failed, try exact name match on the final part
+        final_section_name = path_parts[-1].lower()
+        def find_section_by_name_recursive(sections, target_name):
+            for section in sections:
+                if section.get("name", "").lower() == target_name:
+                    return section.get("id")
+                
+                # Check child sections recursively
+                child_sections = section.get("sections", [])
+                if child_sections:
+                    result = find_section_by_name_recursive(child_sections, target_name)
+                    if result:
+                        return result
+            return None
+        
+        fallback_id = find_section_by_name_recursive(sections_list, final_section_name)
+        if fallback_id:
+            logging.info(f"Found section ID {fallback_id} using fallback name match for '{final_section_name}'")
+            return fallback_id
+        
+        logging.warning(f"Could not resolve section hierarchy '{hierarchy_path}'")
+        return None
+        
+    except Exception as e:
+        logging.error(f"Failed to resolve section hierarchy '{hierarchy_path}': {str(e)}")
+        return None
 
 
 @mcp.tool()
@@ -2883,31 +3163,56 @@ async def fr_testcase_filter_summary(
     filter_id: Optional[Union[int, str]] = None,
     include: Optional[str] = None,
     page: Optional[int] = 1,
-    per_page: Optional[int] = 30,
+    per_page: Optional[int] = 100,
     sort: Optional[str] = "created_at",
     sort_type: Optional[str] = "asc",
     test_run_id: Optional[Union[int, str]] = None
 ) -> Any:
-    """Filter test cases and generate AI-powered summary with automatic label-to-condition and name-to-ID resolution.
+    """Filter test cases with intelligent field resolution and generate AI-powered summary.
     
-    This tool filters test cases by various criteria and provides intelligent insights, recommendations,
-    and risk assessment based on the filtered results. Supports native query_hash format for optimal performance.
+    This enhanced tool uses testcase form fields API to understand field types and expected formats,
+    then automatically converts user-provided values to the correct format before filtering.
     
-    Field Label Support:
+    FIELD-TYPE-SPECIFIC RESOLUTION:
+    1. Gets testcase form fields first to understand field types and available choices
+    2. Applies field-type-specific resolution strategies:
+       
+       📋 DROPDOWN FIELDS: Uses choice IDs from form field choices
+       - Extracts all choice variations (label, value, internal_name)
+       - Maps user input directly to choice UUIDs/IDs
+       - Examples: Severity, Test Case Status, Automation Status, Owner
+       
+       🔗 AUTO_COMPLETE FIELDS: 
+       - Section fields: Resolves section names to section IDs (supports hierarchical paths)
+       - Linked Tasks: Uses text as-is (no ID resolution needed)
+       
+       📝 TEXT/PARAGRAPH FIELDS: Uses values as-is (no resolution)
+       
+       👤 SPECIAL FIELDS:
+       - Creator: Uses user API for name-to-ID resolution
+       
+       ⏭️ OTHER FIELD TYPES: Skipped from filtering to avoid errors
+    
+    3. Comprehensive logging shows resolution strategy and results for each field
+    4. Only processes supported field types to ensure API compatibility
+    
+    SUPPORTED FIELD FORMATS:
+    - "Created by" / "Creator": User names or emails -> Uses user API for resolution
+    - "Section": Section names or hierarchical paths ("Parent > Child") -> Uses section API + hierarchy resolution
+    - "Linked Tasks" / "Issues": Task keys (FS-12345 format) -> Uses task key resolution
+    - "Severity", "Type", "Status": Names -> Uses form field options or generic API resolution
+    - Custom Fields: Analyzes form field type and resolves accordingly
+    
+    FIELD LABEL SUPPORT:
     - "Pre-requisite": Maps to pre_requisite condition  
     - "Steps to Execute": Maps to steps condition
     - "Expected Results": Maps to expected_results condition
     - "Severity": Maps to severity_id condition
     - "Section": Maps to section_id condition
     - "Type": Maps to test_case_type_id condition
-    - "Creator": Maps to creator_id condition
+    - "Creator"/"Created by": Maps to creator_id condition
     - "Status": Maps to test_case_status_id condition
-    
-    Automatic Name-to-ID Resolution:
-    - section_id: Resolves section names to IDs
-    - test_case_type_id: Resolves test case type names to IDs
-    - creator_id: Resolves user names/emails to IDs
-    - Custom fields: Resolves custom field values to IDs
+    - "Linked Tasks"/"Issues": Maps to issue_ids condition
     
     Args:
         project_identifier: Project ID or key (optional, uses FRESHRELEASE_PROJECT_KEY if not provided)
@@ -2924,11 +3229,18 @@ async def fr_testcase_filter_summary(
         test_run_id: Test run ID for filtering test cases within a specific test run
     
     Returns:
-        Dictionary containing filtered test cases with AI-generated summary, insights, and recommendations
+        Dictionary containing filtered test cases with pagination-aware AI-generated summary, insights, and recommendations.
+        Note: AI analysis is clearly marked as complete dataset vs. current page only to avoid assumptions based on pagination.
         
     Examples:
-        # Get test case summary with AI insights
-        fr_testcase_filter_summary(query="Section:Authentication,Creator:John Doe")
+        # Using user names and choice values (automatically resolved to IDs)
+        fr_testcase_filter_summary(query="Section:Authentication,Creator:John Doe,Automation Status:Automated")
+        
+        # Using hierarchical section paths
+        fr_testcase_filter_summary(query="Section:UI Testing > Login Forms,Test case status:Draft")
+        
+        # Using task keys for linked tasks
+        fr_testcase_filter_summary(query="Linked Tasks:FS-12345,Automation Status:Manual")
         
         # Returns: {
         #   "test_cases": [...],
@@ -2940,13 +3252,21 @@ async def fr_testcase_filter_summary(
         #   }
         # }
         
-        # Complex filtering with summary insights
+        # Complex filtering with native format (preserves exact choice IDs)
         fr_testcase_filter_summary(
             query_hash=[
-                {"condition": "severity_id", "operator": "is_in", "value": [17, 16]},
-                {"condition": "creator_id", "operator": "is_in", "value": [50624]}
+                {"condition": "cf_automation_status", "operator": "is", "value": "72dd8976-39ea-41bb-8f5e-ea315998276d"},
+                {"condition": "cf_test_case_status", "operator": "is_in", "value": ["4751363f-2f97-4721-96f6-b288e100cc57"]}
             ],
             include="custom_field"
+        )
+        
+        # Mixed format with automatic choice resolution
+        fr_testcase_filter_summary(
+            query_hash=[
+                {"condition": "cf_automation_status", "operator": "is", "value": "Automated"},  # Will resolve to UUID
+                {"condition": "creator_id", "operator": "is", "value": "john.doe@company.com"}  # Will resolve to user ID
+            ]
         )
     """
     try:
@@ -2969,48 +3289,135 @@ async def fr_testcase_filter_summary(
         form_data = form_fields_result.get("form", {})
         fields_list = form_data.get("fields", [])
         
-        # Build comprehensive field mappings
-        field_label_to_condition_map = {}
-        field_name_to_id_map = {}
-        severity_options = {}
-        section_options = {}
-        creator_options = {}
+        # Step 2: Build comprehensive field metadata and options from form fields
+        logging.info(f"Step 2: Analyzing {len(fields_list)} testcase form fields for intelligent field resolution")
         
-        logging.info(f"Found {len(fields_list)} testcase form fields")
+        field_label_to_condition_map = {}
+        field_metadata = {}
+        form_field_options = {}
         
         for field in fields_list:
             field_name = field.get("name", "")
             field_label = field.get("label", "")
+            field_type = field.get("type", "")
             field_choices = field.get("choices", [])
+            field_required = field.get("required", False)
+            field_default = field.get("default", False)
             
             if field_label and field_name:
-                # Map field labels to their condition names for filtering
-                if field_name == "severity":
-                    condition_name = "severity_id"
-                    # Extract severity options for name-to-ID resolution
-                    for choice in field_choices:
-                        severity_options[choice.get("label", "").lower()] = choice.get("id")
-                elif field_name == "section":
-                    condition_name = "section_id"
-                    # Extract section options for name-to-ID resolution
-                    for choice in field_choices:
-                        section_options[choice.get("label", "").lower()] = choice.get("id")
-                elif field_name == "test_case_type":
-                    condition_name = "test_case_type_id"
-                elif field_name == "test_case_status":
-                    condition_name = "test_case_status_id"
-                elif field_name == "creator":
-                    condition_name = "creator_id"
-                else:
+                # Map field names to their condition names for filtering
+                # Handle both standard and custom fields based on actual API response
+                condition_mapping = {
+                    "severity": "severity_id",
+                    "section": "section_id", 
+                    "test_case_type": "test_case_type_id",
+                    "creator": "creator_id",
+                    "issues": "issue_ids",
+                    "linked_tasks": "issue_ids",
+                    "related_issues": "issue_ids",
+                    # Custom fields - keep original name with cf_ prefix
+                    "cf_test_case_status": "cf_test_case_status",
+                    "cf_automation_status": "cf_automation_status",
+                    "cf_owner": "cf_owner"
+                }
+                
+                # For custom fields (cf_*), use the original field name as condition
+                if field_name.startswith("cf_"):
                     condition_name = field_name
-                
+                else:
+                    condition_name = condition_mapping.get(field_name, field_name)
                 field_label_to_condition_map[field_label.lower()] = condition_name
-                field_name_to_id_map[field_name] = condition_name
                 
-                logging.info(f"Mapped field '{field_label}' -> '{condition_name}'")
+                # Build field metadata for intelligent resolution
+                field_metadata[condition_name] = {
+                    "original_name": field_name,
+                    "label": field_label,
+                    "type": field_type,
+                    "required": field_required,
+                    "is_default": field_default,
+                    "has_choices": len(field_choices) > 0,
+                    "choice_count": len(field_choices),
+                    "expected_format": "id" if field_type in ["dropdown", "select", "multiselect"] else "text",
+                    "field_options": field.get("field_options", {}),
+                    "link": field.get("link", "")
+                }
+                
+                # Handle field resolution based on specific field type requirements
+                if field_type == "dropdown" and field_choices:
+                    # DROPDOWN TYPE: Use choice IDs from form field choices
+                    field_options = {}
+                    choice_variations = {}
+                    
+                    for choice in field_choices:
+                        choice_label = choice.get("label", "")
+                        choice_value = choice.get("value", "")
+                        choice_id = choice.get("id")  # Use the choice ID
+                        choice_internal = choice.get("internal_name", "")
+                        
+                        # Use label if available, otherwise fall back to value
+                        display_text = choice_label if choice_label else choice_value
+                        
+                        if display_text and choice_id is not None:
+                            # Store display text -> choice ID mapping
+                            display_key = str(display_text).lower().strip()
+                            field_options[display_key] = choice_id
+                            
+                            # Store all variations
+                            if choice_label and choice_label != choice_value:
+                                field_options[str(choice_label).lower().strip()] = choice_id
+                            if choice_value:
+                                field_options[str(choice_value).lower().strip()] = choice_id
+                            if choice_internal:
+                                field_options[str(choice_internal).lower().strip()] = choice_id
+                            
+                            # Track for logging
+                            if choice_id not in choice_variations:
+                                choice_variations[choice_id] = []
+                            choice_variations[choice_id].append(display_text)
+                    
+                    if field_options:
+                        form_field_options[field_name] = field_options
+                        form_field_options[condition_name] = field_options
+                        form_field_options[field_label.lower()] = field_options
+                        
+                        field_metadata[condition_name]["choices"] = field_choices
+                        field_metadata[condition_name]["choice_mapping"] = field_options
+                        field_metadata[condition_name]["resolution_strategy"] = "dropdown_choices"
+                        
+                        logging.info(f"✅ DROPDOWN: '{condition_name}' - {len(choice_variations)} choices extracted")
+                
+                elif field_type == "auto_complete":
+                    # AUTO_COMPLETE TYPE: Handle based on field name
+                    if field_name == "issues" or "linked" in field_label.lower() or "task" in field_label.lower():
+                        # LINKED TASKS: Use text as-is (no ID resolution)
+                        field_metadata[condition_name]["resolution_strategy"] = "no_resolution"
+                        logging.info(f"📝 AUTO_COMPLETE (Linked Tasks): '{condition_name}' ({field_label}) - Use text as-is")
+                        
+                    elif field_name == "section":
+                        # SECTION: Use section ID resolution  
+                        field_metadata[condition_name]["resolution_strategy"] = "section_resolution"
+                        field_metadata[condition_name]["api_link"] = field.get("link", "")
+                        logging.info(f"🔗 AUTO_COMPLETE (Section): '{condition_name}' ({field_label}) - Resolve to section IDs")
+                        
+                    else:
+                        # Other auto_complete fields - skip for now
+                        field_metadata[condition_name]["resolution_strategy"] = "skip"
+                        logging.info(f"⏭️ AUTO_COMPLETE (Other): '{condition_name}' ({field_label}) - Skipped")
+                        
+                elif field_type in ["text", "paragraph"]:
+                    # TEXT FIELDS: No resolution needed
+                    field_metadata[condition_name]["resolution_strategy"] = "no_resolution"
+                    logging.info(f"📝 TEXT: '{condition_name}' ({field_label}) - No resolution needed")
+                    
+                else:
+                    # OTHER FIELD TYPES: Skip for filtering
+                    field_metadata[condition_name]["resolution_strategy"] = "skip"
+                    logging.info(f"⏭️ OTHER ({field_type}): '{condition_name}' ({field_label}) - Skipped for filtering")
+                
+                logging.info(f"Mapped field '{field_label}' -> '{condition_name}' (type: {field_type}, choices: {len(field_choices)})")
         
-        # Step 2: Build comprehensive user mapping for creator_id resolution
-        logging.info("Step 2: Preparing user resolution for creator_id fields")
+        # Log simple completion message
+        logging.info(f"Step 2 Complete: Form field analysis completed - {len(field_metadata)} fields processed")
         
 
         # Build base parameters
@@ -3046,7 +3453,7 @@ async def fr_testcase_filter_summary(
                         "name": field.get("name", ""),
                         "label": field.get("label", ""),
                         "type": field.get("type", ""),
-                        "condition": field_name_to_id_map.get(field.get("name", ""), field.get("name", ""))
+                        "condition": field_label_to_condition_map.get(field.get("name", ""), field.get("name", ""))
                     })
             
             # Parse query based on format
@@ -3105,10 +3512,10 @@ async def fr_testcase_filter_summary(
                         params[f"query_hash[{i}][condition]"] = condition
                         params[f"query_hash[{i}][operator]"] = operator
                         
-                        # Step 4: Resolve values to IDs using enhanced field mappings
+                        # Step 4: Resolve values to IDs using intelligent form field analysis
                         final_value = await _resolve_testcase_field_value(
                             condition, value, project_id, client, base_url, headers,
-                            severity_options, section_options
+                            field_metadata, form_field_options
                         )
                         
                         # Handle array values using helper function
@@ -3139,10 +3546,10 @@ async def fr_testcase_filter_summary(
                     params[f"query_hash[{i}][condition]"] = condition
                     params[f"query_hash[{i}][operator]"] = operator
                     
-                    # Resolve values to IDs using enhanced field mappings
+                    # Resolve values to IDs using intelligent form field analysis
                     final_value = await _resolve_testcase_field_value(
                         condition, value, project_id, client, base_url, headers,
-                        severity_options, section_options
+                        field_metadata, form_field_options
                     )
                     
                     # Handle array values using helper function
@@ -3192,10 +3599,10 @@ async def fr_testcase_filter_summary(
                 params[f"query_hash[{i}][condition]"] = condition
                 params[f"query_hash[{i}][operator]"] = operator
                 
-                # Resolve values to IDs using enhanced field mappings
+                # Resolve values to IDs using intelligent form field analysis
                 final_value = await _resolve_testcase_field_value(
                     condition, value, project_id, client, base_url, headers,
-                    severity_options, section_options
+                    field_metadata, form_field_options
                 )
                 
                 # Handle array values using helper function
