@@ -5,6 +5,10 @@
 
 An MCP server that enables AI models to interact with Freshrelease through powerful tools for complete project and test management.
 
+<a href="https://glama.ai/mcp/servers/@dasscoax/freshrelease_mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@dasscoax/freshrelease_mcp/badge" alt="Freshrelease Server MCP server" />
+</a>
+
 ## 🚀 Key Features
 
 - **🤖 AI-Native**: Built specifically for AI model integration via MCP protocol
@@ -232,4 +236,3 @@ MIT License - see LICENSE file for details.
 ⭐ **Like this project?** Give it a star on GitHub!  
 🐛 **Found a bug?** [Open an issue](../../issues)  
 💡 **Have ideas?** [Start a discussion](../../discussions)
-
