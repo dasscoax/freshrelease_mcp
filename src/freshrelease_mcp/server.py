@@ -7,6 +7,7 @@ import base64
 from typing import Optional, Dict, Union, Any, List, Callable, Awaitable
 from enum import IntEnum, Enum
 import re
+from html import escape
 from pydantic import BaseModel, Field
 from functools import wraps
 import time
@@ -841,6 +842,86 @@ async def fr_get_task(project_identifier: Optional[Union[int, str]] = None, key:
 
     except Exception as e:
         return create_error_response(f"Failed to get task: {str(e)}")
+
+@mcp.tool(name="add_notes_or_comment_in_issue")
+@performance_monitor("add_notes_or_comment_in_issue")
+async def add_notes_or_comment_in_issue(
+    text: str,
+    issue_key: Optional[Union[str, int]] = None,
+    issue_id: Optional[int] = None,
+    link: Optional[str] = None,
+    project_identifier: Optional[Union[int, str]] = None,
+) -> Dict[str, Any]:
+    """Add a note or comment to an issue via POST .../issues/{issue_id}/comments.
+
+    issue_id is the numeric internal id (not the issue key). If you only have the key,
+    pass issue_key; the tool calls fr_get_task to resolve the id.
+
+    Args:
+        text: Comment body (sent inside a <p> wrapper). May include HTML; passed through unchanged.
+        issue_key: Issue key (e.g. FS-123) when issue_id is not known.
+        issue_id: Numeric issue id for the comments endpoint.
+        link: Optional URL; when set, appends an anchor after the text (href and link text).
+        project_identifier: Project id or key (optional if FRESHRELEASE_PROJECT_KEY is set).
+
+    Returns:
+        API response with a success message, or an error dict.
+    """
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+
+        resolved_id: Optional[int] = None
+        if issue_id is not None:
+            resolved_id = int(issue_id)
+        elif issue_key is not None:
+            task = await fr_get_task(
+                project_identifier=project_identifier, key=issue_key
+            )
+            if "error" in task:
+                return task
+            raw = task.get("id")
+            if raw is None:
+                return create_error_response(
+                    "Could not resolve numeric issue id from fr_get_task response"
+                )
+            resolved_id = int(raw)
+        else:
+            return create_error_response(
+                "Provide either issue_id (numeric) or issue_key"
+            )
+
+        note = text.strip()
+        if link:
+            le = escape(link.strip(), quote=True)
+            content = (
+                f"<p> {note} : <a href=\"{le}\" rel=\"noopener noreferrer\" "
+                f'target="_blank">{le}</a> </p>'
+            )
+        else:
+            content = f"<p> {note} </p>"
+
+        url = f"{base_url}/{project_id}/issues/{resolved_id}/comments"
+        payload = {"comment": {"content": content}}
+        result = await make_api_request("POST", url, headers, json_data=payload)
+        if isinstance(result, dict):
+            result = {**result, "message": "Note or comment added successfully."}
+        else:
+            result = {
+                "data": result,
+                "message": "Note or comment added successfully.",
+            }
+        return result
+    except httpx.HTTPStatusError as e:
+        return create_error_response(
+            "Failed to add note or comment",
+            e.response.json() if e.response else None,
+        )
+    except Exception as e:
+        return create_error_response(f"Failed to add note or comment: {str(e)}")
+
 
 @mcp.tool()
 @performance_monitor("fr_get_all_tasks")
