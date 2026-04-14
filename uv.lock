@@ -263,7 +263,7 @@ wheels = [
 
 [[package]]
 name = "freshrelease-mcp"
-version = "1.9.9"
+version = "1.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

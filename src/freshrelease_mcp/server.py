@@ -4,6 +4,8 @@ from mcp.server.fastmcp import FastMCP
 import logging
 import os
 import base64
+import mimetypes
+from pathlib import Path
 from typing import Optional, Dict, Union, Any, List, Callable, Awaitable
 from enum import IntEnum, Enum
 import re
@@ -198,6 +200,17 @@ def create_error_response(error_msg: str, details: Any = None) -> Dict[str, Any]
     return response
 
 
+def _numeric_issue_id_from_get_task_response(task: Dict[str, Any]) -> Optional[Any]:
+    """Extract issue id from GET /issues/{key} JSON.
+
+    The API may return a flat issue object or wrap it under an ``issue`` key; see
+    ``_resolve_issue_key_to_id`` for the same handling.
+    """
+    if not isinstance(task, dict):
+        return None
+    if "issue" in task and isinstance(task["issue"], dict):
+        return task["issue"].get("id")
+    return task.get("id")
 
 
 # Cache for standard fields to avoid recreating set on every call
@@ -882,7 +895,7 @@ async def add_notes_or_comment_in_issue(
             )
             if "error" in task:
                 return task
-            raw = task.get("id")
+            raw = _numeric_issue_id_from_get_task_response(task)
             if raw is None:
                 return create_error_response(
                     "Could not resolve numeric issue id from fr_get_task response"
@@ -921,6 +934,152 @@ async def add_notes_or_comment_in_issue(
         )
     except Exception as e:
         return create_error_response(f"Failed to add note or comment: {str(e)}")
+
+
+async def _upload_comment_attachment(
+    client: httpx.AsyncClient,
+    base_url: str,
+    project_id: Union[int, str],
+    authorization: str,
+    file_path: str,
+) -> Dict[str, Any]:
+    """POST multipart to .../comments/null/documents; returns the API `document` object."""
+    path = Path(file_path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Attachment not found or not a file: {file_path}")
+    filename = path.name
+    file_bytes = await asyncio.to_thread(path.read_bytes)
+    mime, _ = mimetypes.guess_type(str(path))
+    if not mime:
+        mime = "application/octet-stream"
+    url = f"{base_url}/{project_id}/comments/null/documents"
+    headers = {"Authorization": authorization}
+    data = {"Content-Type": mime}
+    files = {"attachment": (filename, file_bytes, mime)}
+    response = await client.post(url, headers=headers, data=data, files=files)
+    response.raise_for_status()
+    body = response.json()
+    doc = body.get("document")
+    if not isinstance(doc, dict) or doc.get("id") is None:
+        raise ValueError(f"Unexpected document upload response: {body}")
+    return doc
+
+
+@mcp.tool(name="add_notes_or_comment_with_attachments")
+@performance_monitor("add_notes_or_comment_with_attachments")
+async def add_notes_or_comment_with_attachments(
+    text: str,
+    attachment_paths: Optional[List[str]] = None,
+    document_ids: Optional[List[Union[int, str]]] = None,
+    issue_key: Optional[Union[str, int]] = None,
+    issue_id: Optional[int] = None,
+    link: Optional[str] = None,
+    project_identifier: Optional[Union[int, str]] = None,
+) -> Dict[str, Any]:
+    """Add a note on an issue with file attachments.
+
+    Uploads each local file via POST ``{project}/comments/null/documents`` (multipart form
+    field ``attachment``), collects returned document ids, then POSTs to
+    ``.../issues/{issue_id}/comments`` with ``comment: { content, document_ids }``.
+
+    You may pass ``document_ids`` only (already-uploaded documents), only ``attachment_paths``,
+    or both (uploads are merged with ``document_ids``).
+
+    Args:
+        text: Comment body; wrapped in ``<p>`` like ``add_notes_or_comment_in_issue``.
+        attachment_paths: Local filesystem paths of files to upload before posting the note.
+        document_ids: Document id(s) from prior uploads to attach without re-uploading.
+        issue_key: Issue key (e.g. FS-123) when ``issue_id`` is not known.
+        issue_id: Numeric issue id for the comments endpoint.
+        link: Optional URL; when set, same anchor behavior as ``add_notes_or_comment_in_issue``.
+        project_identifier: Project id or key (optional if FRESHRELEASE_PROJECT_KEY is set).
+
+    Returns:
+        API response for the comment create call, plus upload metadata, or an error dict.
+    """
+    paths = list(attachment_paths or [])
+    preset_ids = [str(x).strip() for x in (document_ids or []) if str(x).strip()]
+    if not paths and not preset_ids:
+        return create_error_response(
+            "Provide at least one of attachment_paths (files to upload) or document_ids"
+        )
+    try:
+        env_data = validate_environment()
+        base_url = env_data["base_url"]
+        headers = env_data["headers"]
+        project_id = get_project_identifier(project_identifier)
+        authorization = headers["Authorization"]
+
+        resolved_id: Optional[int] = None
+        if issue_id is not None:
+            resolved_id = int(issue_id)
+        elif issue_key is not None:
+            task = await fr_get_task(
+                project_identifier=project_identifier, key=issue_key
+            )
+            if "error" in task:
+                return task
+            raw = _numeric_issue_id_from_get_task_response(task)
+            if raw is None:
+                return create_error_response(
+                    "Could not resolve numeric issue id from fr_get_task response"
+                )
+            resolved_id = int(raw)
+        else:
+            return create_error_response(
+                "Provide either issue_id (numeric) or issue_key"
+            )
+
+        note = text.strip()
+        if link:
+            le = escape(link.strip(), quote=True)
+            content = (
+                f"<p> {note} : <a href=\"{le}\" rel=\"noopener noreferrer\" "
+                f'target="_blank">{le}</a> </p>'
+            )
+        else:
+            content = f"<p> {note} </p>"
+
+        client = get_http_client()
+        uploaded: List[Dict[str, Any]] = []
+        collected_ids: List[str] = list(preset_ids)
+        for p in paths:
+            doc = await _upload_comment_attachment(
+                client, base_url, project_id, authorization, p
+            )
+            uploaded.append(doc)
+            collected_ids.append(str(doc["id"]))
+
+        url = f"{base_url}/{project_id}/issues/{resolved_id}/comments"
+        payload = {
+            "comment": {
+                "content": content,
+                "document_ids": collected_ids,
+            }
+        }
+        result = await make_api_request("POST", url, headers, json_data=payload)
+        if isinstance(result, dict):
+            result = {
+                **result,
+                "message": "Note with attachment(s) added successfully.",
+                "uploaded_documents": uploaded,
+                "document_ids_used": collected_ids,
+            }
+        else:
+            result = {
+                "data": result,
+                "message": "Note with attachment(s) added successfully.",
+                "uploaded_documents": uploaded,
+                "document_ids_used": collected_ids,
+            }
+        return result
+    except httpx.HTTPStatusError as e:
+        return create_error_response(
+            "Failed to upload attachment or add note",
+            e.response.json() if e.response else None,
+        )
+    except Exception as e:
+        return create_error_response(f"Failed to upload attachment or add note: {str(e)}")
 
 
 @mcp.tool()
@@ -1011,10 +1170,10 @@ async def fr_get_epic_insights(
         #   "epic_details": {...},
         #   "child_tasks": [...],
         #   "ai_insights": {
-        #     "summary": "Epic contains 15 tasks with 60% completion rate...",
-        #     "insights": ["Epic is progressing well...", "Development is active..."],
-        #     "risk_factors": ["High number of open PRs..."],
-        #     "metrics": {"git_development": {"open_prs": 3}, ...}
+        #     "summary": "5/10 tasks completed.",
+        #     "insight": "Needs attention.",
+        #     "recommendation": "Prioritize task execution.",
+        #     "data_source": "freshrelease_task_data_only"
         #   }
         # }
         
@@ -1498,7 +1657,7 @@ def _find_section_by_name(sections: List[Dict[str, Any]], target_name: str) -> O
     for section in sections:
         section_name = section.get("name")
         if section_name and str(section_name).strip().lower() == target_lower:
-                section_id = section.get("id")
+            section_id = section.get("id")
             return section_id if isinstance(section_id, int) else None
     
     return None
@@ -1530,7 +1689,7 @@ async def _fetch_sections_at_level(
     # Build URL based on hierarchy level
     if parent_section_id is None:
         url = f"{base_url}/{project_identifier}/sections"
-                    else:
+    else:
         url = f"{base_url}/{project_identifier}/sections/{parent_section_id}/sections"
     
     # Fetch and parse response
@@ -2534,132 +2693,199 @@ async def _get_testcase_fields_mapping(
 def _generate_epic_insights(epic_details: Dict[str, Any], child_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Generate simplified AI insights for an epic and its child tasks.
     
+    CRITICAL: This function processes ONLY epic and task data from Freshrelease API.
+    It should NEVER process chat content, conversation history, or user messages.
+    
     Args:
-        epic_details: Epic/parent task details
-        child_tasks: List of detailed child task objects
+        epic_details: Epic/parent task details from Freshrelease API
+        child_tasks: List of detailed child task objects from Freshrelease API
         
     Returns:
-        Dictionary containing concise epic insights
+        Dictionary containing concise epic insights based purely on task data
     """
-    total_tasks = len(child_tasks)
+    # Data validation - ensure we're only processing Freshrelease task data
+    if not isinstance(child_tasks, list):
+        logging.warning("_generate_epic_insights: child_tasks is not a list, returning error")
+        return {
+            "summary": "Invalid task data received.",
+            "insights": ["Unable to analyze tasks due to data format issues."],
+            "recommendations": ["Check task data format."]
+        }
+    
+    # Filter out any non-task data that might have contaminated the input
+    valid_tasks = []
+    for task in child_tasks:
+        # Ensure this looks like a Freshrelease task object
+        if isinstance(task, dict):
+            task_data = task.get("issue", {}) if "issue" in task else task
+            # Basic validation that this is a task object (has ID, title, or key)
+            if any(key in task_data for key in ["id", "title", "key", "display_id", "status"]):
+                valid_tasks.append(task)
+            else:
+                logging.warning(f"_generate_epic_insights: Filtered out non-task data: {list(task_data.keys())[:3]}...")
+    
+    total_tasks = len(valid_tasks)
+    logging.info(f"_generate_epic_insights: Processing {total_tasks} valid tasks (filtered from {len(child_tasks)} input items)")
     
     if total_tasks == 0:
         return {
-            "summary": "Epic has no child tasks.",
+            "summary": "Epic has no valid child tasks.",
             "insights": ["Break down epic into actionable tasks."],
             "recommendations": ["Define clear deliverables."]
         }
     
-    # Analyze task statuses and assignees
+    # Extract epic information for context
+    epic_title = "Unknown Epic"
+    if epic_details and isinstance(epic_details, dict):
+        epic_issue_data = epic_details.get("issue", {}) if "issue" in epic_details else epic_details
+        epic_title = epic_issue_data.get("title", "Unknown Epic")
+    
+    # Analyze task statuses and assignees from validated task data only
     status_counts = {}
     assignee_counts = {}
+    priority_counts = {}
     
-    for task in child_tasks:
+    for task in valid_tasks:
         task_data = task.get("issue", {}) if "issue" in task else task
         
-        # Status analysis
+        # Status analysis - extract from Freshrelease task status field
         status = task_data.get("status", {})
-        status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
+        if isinstance(status, dict):
+            status_name = status.get("name", "Unknown")
+        else:
+            status_name = str(status) if status else "Unknown"
         status_counts[status_name] = status_counts.get(status_name, 0) + 1
         
-        # Assignee analysis
+        # Assignee analysis - extract from Freshrelease task owner field
         owner = task_data.get("owner", {})
-        owner_name = owner.get("name", "Unassigned") if isinstance(owner, dict) else "Unassigned"
+        if isinstance(owner, dict):
+            owner_name = owner.get("name", "Unassigned")
+        else:
+            owner_name = "Unassigned"
         assignee_counts[owner_name] = assignee_counts.get(owner_name, 0) + 1
+        
+        # Priority analysis - extract from Freshrelease task priority field
+        priority = task_data.get("priority", {})
+        if isinstance(priority, dict):
+            priority_name = priority.get("name", "No Priority")
+        else:
+            priority_name = "No Priority"
+        priority_counts[priority_name] = priority_counts.get(priority_name, 0) + 1
     
-    # Calculate completion rate
-    completed_statuses = ["done", "completed", "resolved", "closed", "finished"]
+    # Calculate completion rate based on task statuses
+    completed_statuses = ["done", "completed", "resolved", "closed", "finished", "shipped", "deployed"]
     completed_tasks = sum(count for status, count in status_counts.items() 
                         if any(comp in status.lower() for comp in completed_statuses))
     completion_rate = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
     
-    # Generate simple insights
-    insights = []
-    recommendations = []
-    
-    # Progress assessment
-    if completion_rate >= 80:
-        insights.append(f"Epic is nearly complete ({completion_rate:.0f}% done).")
-        recommendations.append("Focus on final testing and deployment.")
-    elif completion_rate >= 50:
-        insights.append(f"Epic is progressing well ({completion_rate:.0f}% done).")
-        recommendations.append("Monitor blockers and maintain momentum.")
-    else:
-        insights.append(f"Epic is in early stages ({completion_rate:.0f}% done).")
-        recommendations.append("Focus on task prioritization.")
-    
-    # Team distribution
-    team_size = len([name for name in assignee_counts.keys() if name != "Unassigned"])
-    unassigned_count = assignee_counts.get("Unassigned", 0)
-    
-    if team_size == 1:
-        insights.append("Single developer handling all tasks.")
-        recommendations.append("Consider team backup for knowledge sharing.")
-    elif unassigned_count > 0:
-        insights.append(f"{unassigned_count} tasks unassigned.")
-        recommendations.append("Assign ownership for better accountability.")
-    
-    # Simple summary
+    # Generate minimal insights (no chat content)
+    # Create concise summary based only on task data
     summary = f"{completed_tasks}/{total_tasks} tasks completed."
-    if team_size > 0:
-        summary += f" {team_size} team member{'s' if team_size > 1 else ''} involved."
+    
+    # Single key insight
+    insight = "On track." if completion_rate >= 60 else "Needs attention."
+    
+    # Single recommendation
+    if completed_tasks == total_tasks:
+        recommendation = "Epic complete."
+    elif completion_rate < 30:
+        recommendation = "Prioritize task execution."
+    else:
+        recommendation = "Continue progress."
+    
+    # Log what we actually processed (for debugging)
+    logging.info(f"_generate_epic_insights: Generated insights for '{epic_title}' - {total_tasks} tasks, {completion_rate:.0f}% complete")
     
     return {
         "summary": summary,
-        "insights": insights,
-        "recommendations": recommendations
+        "insight": insight,
+        "recommendation": recommendation,
+        "data_source": "freshrelease_task_data_only"  # Confirms no chat content
     }
 
 
 def _generate_testrun_insights(test_run: Dict[str, Any], users: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Generate concise AI insights for a test run.
     
+    CRITICAL: This function processes ONLY test run data from Freshrelease API.
+    It should NEVER process chat content, conversation history, or user messages.
+    
     Args:
-        test_run: Test run data from API
-        users: List of users associated with the test run
+        test_run: Test run data from Freshrelease API
+        users: List of users associated with the test run from Freshrelease API
         
     Returns:
-        Dictionary containing minimal test run insights
+        Dictionary containing minimal test run insights based purely on test run data
     """
+    # Data validation - ensure we're processing Freshrelease test run data
+    if not isinstance(test_run, dict):
+        logging.warning("_generate_testrun_insights: test_run is not a dict, returning error")
+        return {
+            "summary": "Invalid test run data received.",
+            "recommendations": ["Check test run data format."],
+            "data_source": "error_invalid_data"
+        }
+    
+    # Validate this looks like a Freshrelease test run object
+    if not any(key in test_run for key in ["progress", "id", "name", "status", "created_at"]):
+        logging.warning(f"_generate_testrun_insights: No expected test run fields found: {list(test_run.keys())[:3]}...")
+        return {
+            "summary": "Invalid test run data structure.",
+            "recommendations": ["Verify test run API response format."],
+            "data_source": "error_invalid_structure"
+        }
+    
+    # Extract test run name for context
+    test_run_name = test_run.get("name", "Unknown Test Run")
+    test_run_id = test_run.get("id", "Unknown")
+    
+    # Extract progress data from Freshrelease test run API response
     progress = test_run.get("progress", {})
-    total_tests = sum(progress.values())
+    if not isinstance(progress, dict):
+        logging.warning("_generate_testrun_insights: progress field is not a dict")
+        return {
+            "summary": f"Test run '{test_run_name}' has invalid progress data.",
+            "recommendations": ["Check test run progress data structure."],
+            "data_source": "error_invalid_progress"
+        }
+    
+    # Calculate metrics from validated progress data
+    passed = progress.get("passed", 0) if isinstance(progress.get("passed"), (int, float)) else 0
+    failed = progress.get("failed", 0) if isinstance(progress.get("failed"), (int, float)) else 0
+    not_run = progress.get("not_run", 0) if isinstance(progress.get("not_run"), (int, float)) else 0
+    total_tests = passed + failed + not_run
+    
+    logging.info(f"_generate_testrun_insights: Processing test run '{test_run_name}' (ID: {test_run_id}) - {total_tests} total tests")
     
     if total_tests == 0:
         return {
-            "summary": "No test cases in run.",
-            "recommendations": ["Add test cases to start testing."]
+            "summary": f"Test run '{test_run_name}' has no test cases.",
+            "recommendations": ["Add test cases to start testing."],
+            "data_source": "freshrelease_testrun_data_only"
         }
-    
-    # Core metrics
-    passed = progress.get("passed", 0)
-    failed = progress.get("failed", 0)
-    not_run = progress.get("not_run", 0)
     
     executed = passed + failed
     completion_rate = (executed / total_tests) * 100 if total_tests > 0 else 0
     
-    # Simple summary
-    if completion_rate == 100:
-        summary = f"{passed}/{total_tests} tests completed."
-        if failed == 0:
-            summary += " All passed! ✅"
-        else:
-            summary += f" {failed} failed."
-    else:
-        summary = f"{executed}/{total_tests} tests executed ({completion_rate:.0f}% complete)."
-    
-    # Key recommendations
-    recommendations = []
+    # Generate minimal summary (no chat content)
+    summary = f"{executed}/{total_tests} tests executed."
     if failed > 0:
-        recommendations.append("Fix failing tests.")
+        summary += f" {failed} failed."
+    
+    # Single recommendation based only on test metrics
+    if failed > 0:
+        recommendation = "Fix failing tests."
     elif not_run > 0:
-        recommendations.append("Execute remaining tests.")
+        recommendation = "Complete remaining tests."
     else:
-        recommendations.append("Test run looks good.")
+        recommendation = "Test run complete."
+    
+    logging.info(f"_generate_testrun_insights: Generated insights for '{test_run_name}' - {completion_rate:.0f}% complete, {failed} failed")
     
     return {
         "summary": summary,
-        "recommendations": recommendations
+        "recommendation": recommendation,
+        "data_source": "freshrelease_testrun_data_only"  # Confirms no chat content
     }
 
 
@@ -2690,25 +2916,53 @@ def _add_ai_summary_to_testcase_result(result: Dict[str, Any], filter_criteria: 
 def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria: Dict[str, Any], api_result: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate pagination-aware AI-powered summary of filtered test cases.
     
+    CRITICAL: This function processes ONLY test case data from Freshrelease API.
+    It should NEVER process chat content, conversation history, or user messages.
+    
     Args:
-        test_cases: List of test case objects (current page)
+        test_cases: List of test case objects from Freshrelease API (current page)
         filter_criteria: Applied filter criteria for context
-        api_result: Full API response with pagination metadata
+        api_result: Full API response with pagination metadata from Freshrelease API
         
     Returns:
-        Dictionary containing comprehensive summary and insights with pagination awareness
+        Dictionary containing comprehensive summary and insights with pagination awareness based purely on test case data
     """
-    if not test_cases:
+    # Data validation - ensure we're processing Freshrelease test case data
+    if not isinstance(test_cases, list):
+        logging.warning("_generate_testcase_summary: test_cases is not a list, returning error")
         return {
-            "summary": "No test cases found matching the specified criteria.",
+            "summary": "Invalid test case data received.",
+            "insights": ["Unable to analyze test cases due to data format issues."],
+            "recommendations": ["Check test case data format."],
+            "data_source": "error_invalid_data"
+        }
+    
+    # Filter out any non-test-case data that might have contaminated the input
+    valid_test_cases = []
+    for tc in test_cases:
+        # Ensure this looks like a Freshrelease test case object
+        if isinstance(tc, dict):
+            # Basic validation that this is a test case object (has expected fields)
+            if any(key in tc for key in ["id", "title", "section_id", "severity_id", "creator_id", "test_case_status_id"]):
+                valid_test_cases.append(tc)
+            else:
+                logging.warning(f"_generate_testcase_summary: Filtered out non-test-case data: {list(tc.keys())[:3]}...")
+    
+    total_valid_cases = len(valid_test_cases)
+    logging.info(f"_generate_testcase_summary: Processing {total_valid_cases} valid test cases (filtered from {len(test_cases)} input items)")
+    
+    if not valid_test_cases:
+        return {
+            "summary": "No valid test cases found matching the specified criteria.",
             "total_count": 0,
             "page_count": 0,
             "insights": ["Consider broadening your filter criteria to find relevant test cases."],
-            "recommendations": ["Review section structure and test case organization."]
+            "recommendations": ["Review section structure and test case organization."],
+            "data_source": "freshrelease_testcase_data_only"
         }
     
-    # Extract pagination metadata from API response
-    current_page_count = len(test_cases)
+    # Extract pagination metadata from API response (use validated data count)
+    current_page_count = len(valid_test_cases)  # Use validated test cases count
     total_count = api_result.get("total_count", current_page_count) if api_result else current_page_count
     current_page = filter_criteria.get("page", 1)
     per_page = filter_criteria.get("per_page", 100)
@@ -2717,14 +2971,14 @@ def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria
     # Calculate if this is a paginated result
     is_paginated_result = total_count > current_page_count or (total_pages and total_pages > 1)
     
-    # Analyze test case distribution
+    # Analyze test case distribution from validated test case data only
     severity_counts = {}
     section_counts = {}
     creator_counts = {}
     status_counts = {}
     automation_status = {"automated": 0, "manual": 0, "not_specified": 0}
     
-    for tc in test_cases:
+    for tc in valid_test_cases:  # Process only validated test cases
         # Severity analysis
         severity_id = tc.get("severity_id")
         if severity_id:
@@ -2755,118 +3009,42 @@ def _generate_testcase_summary(test_cases: List[Dict[str, Any]], filter_criteria
         else:
             automation_status["not_specified"] += 1
     
-    # Generate insights based on analysis
-    insights = []
-    recommendations = []
-    
-    # Pagination-aware insights
-    page_qualifier = " (on this page)" if is_paginated_result else ""
-    
-    # Coverage insights
-    if is_paginated_result:
-        insights.append(f"Dataset contains {total_count} total test cases. Analyzing {current_page_count} results from page {current_page}.")
-        recommendations.append("Use pagination parameters to analyze the complete dataset for comprehensive insights.")
-    else:
-        if total_count < 10:
-            insights.append(f"Limited test coverage with only {total_count} test cases.")
-            recommendations.append("Consider expanding test case coverage for better quality assurance.")
-        elif total_count > 100:
-            insights.append(f"Comprehensive test suite with {total_count} test cases.")
-            recommendations.append("Consider organizing test cases into logical groups for better maintainability.")
-    
-    # Automation insights (current page analysis)
+    # Generate minimal insights (current page analysis)
     page_automation_rate = (automation_status["automated"] / current_page_count) * 100 if current_page_count > 0 else 0
-    if is_paginated_result:
-        insights.append(f"Current page automation rate: {page_automation_rate:.1f}%{page_qualifier}.")
-        recommendations.append("Review complete dataset to get accurate automation metrics across all test cases.")
-    else:
-        if page_automation_rate < 30:
-            insights.append(f"Low automation rate ({page_automation_rate:.1f}%). Most tests are manual.")
-            recommendations.append("Prioritize test automation to improve execution efficiency.")
-        elif page_automation_rate > 70:
-            insights.append(f"High automation rate ({page_automation_rate:.1f}%). Well-automated test suite.")
-            recommendations.append("Maintain automation coverage and keep tests up-to-date.")
     
-    # Distribution insights (current page analysis)
+    # Simple summary text
     if is_paginated_result:
-        insights.append(f"Current page shows test cases across {len(section_counts)} sections{page_qualifier}.")
-        if len(creator_counts) > 0:
-            insights.append(f"Test cases created by {len(creator_counts)} different team members{page_qualifier}.")
+        summary = f"Found {total_count} test cases. Showing {current_page_count} on page {current_page}."
     else:
-        # Distribution insights for complete dataset
-        if len(section_counts) == 1:
-            insights.append("Test cases are concentrated in a single section.")
-            recommendations.append("Ensure test coverage across different application areas.")
-        elif len(section_counts) > 5:
-            insights.append(f"Test cases span across {len(section_counts)} different sections.")
-            recommendations.append("Review section organization for optimal test management.")
-        
-        # Creator diversity for complete dataset
-        if len(creator_counts) == 1:
-            insights.append("All test cases created by a single person.")
-            recommendations.append("Encourage team collaboration in test case creation.")
-        elif len(creator_counts) > 5:
-            insights.append(f"Test cases created by {len(creator_counts)} different team members.")
-            recommendations.append("Maintain consistent quality standards across different creators.")
+        summary = f"Found {total_count} test cases."
     
-    # Generate pagination-aware summary text
-    if is_paginated_result:
-        summary_parts = [f"Found {total_count} total test cases matching your criteria."]
-        summary_parts.append(f"Showing {current_page_count} results from page {current_page} (of {total_pages or '?'} pages).")
-        
-        # Analysis is based on current page only
-        if automation_status["automated"] > 0:
-            summary_parts.append(f"On this page: {automation_status['automated']} are automated")
-        if automation_status["manual"] > 0:
-            summary_parts.append(f"{automation_status['manual']} are manual")
-            
-        summary = " ".join(summary_parts) + ". Note: Analysis based on current page only."
+    # Single automation insight
+    if page_automation_rate >= 70:
+        insight = "Well automated."
+    elif page_automation_rate >= 30:
+        insight = "Partially automated."
     else:
-        # Complete dataset analysis
-        summary_parts = [f"Found {total_count} test cases matching your criteria."]
-        
-        if automation_status["automated"] > 0:
-            summary_parts.append(f"{automation_status['automated']} are automated")
-        if automation_status["manual"] > 0:
-            summary_parts.append(f"{automation_status['manual']} are manual")
-        
-        summary = " ".join(summary_parts) + "."
+        insight = "Mostly manual."
     
-    # Risk assessment (with pagination awareness)
-    risk_factors = []
+    # Single recommendation
     if is_paginated_result:
-        risk_factors.append("Analysis is based on current page only - complete dataset review needed for accurate risk assessment")
-        if page_automation_rate < 50:
-            risk_factors.append(f"Current page shows low automation rate ({page_automation_rate:.1f}%) - verify across complete dataset")
+        recommendation = "Review complete dataset for full analysis."
+    elif page_automation_rate < 50:
+        recommendation = "Consider increasing automation."
     else:
-        if page_automation_rate < 50:
-            risk_factors.append("Low automation coverage may impact release velocity")
-        if len(creator_counts) == 1:
-            risk_factors.append("Single point of knowledge risk")
-        if total_count < 5:
-            risk_factors.append("Insufficient test coverage")
+        recommendation = "Maintain test quality."
         
+    # Log what we actually processed (for debugging)
+    automation_rate = (automation_status["automated"] / current_page_count) * 100 if current_page_count > 0 else 0
+    logging.info(f"_generate_testcase_summary: Generated summary for {current_page_count} valid test cases - {automation_rate:.0f}% automated")
+    
     return {
         "summary": summary,
+        "insight": insight,
+        "recommendation": recommendation,
         "total_count": total_count,
         "page_count": current_page_count,
-        "is_paginated": is_paginated_result,
-        "pagination": {
-            "current_page": current_page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "showing_results": f"{current_page_count} of {total_count}"
-        },
-        "insights": insights,
-        "recommendations": recommendations,
-        "risk_factors": risk_factors,
-        "metrics": {
-            "page_automation_rate": f"{page_automation_rate:.1f}%",
-            "sections_covered_on_page": len(section_counts),
-            "contributors_on_page": len(creator_counts),
-            "status_distribution_on_page": len(status_counts)
-        },
-        "filter_applied": filter_criteria
+        "data_source": "freshrelease_testcase_data_only"  # Confirms no chat content
     }
 
 
@@ -3241,10 +3419,12 @@ async def fr_testcase_filter_summary(
         # Returns: {
         #   "test_cases": [...],
         #   "ai_summary": {
-        #     "summary": "Found 25 test cases. 15 are automated, 10 are manual.",
-        #     "insights": ["High automation rate (60%). Well-automated test suite."],
-        #     "recommendations": ["Maintain automation coverage and keep tests up-to-date."],
-        #     "metrics": {"automation_rate": "60.0%", "sections_covered": 3}
+        #     "summary": "Found 25 test cases.",
+        #     "insight": "Well automated.",
+        #     "recommendation": "Maintain test quality.",
+        #     "total_count": 25,
+        #     "page_count": 25,
+        #     "data_source": "freshrelease_testcase_data_only"
         #   }
         # }
         
@@ -3579,12 +3759,12 @@ async def fr_testcase_filter_summary(
 
         # Convert filter_rules to query_hash format using explicit field mappings
         logging.info("Step 5: Processing filter_rules using explicit field mappings")
-            for i, rule in enumerate(filter_rules):
-                if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
-                    condition = rule["condition"]
-                    operator = rule["operator"]
-                    value = rule["value"]
-                    
+        for i, rule in enumerate(filter_rules):
+            if isinstance(rule, dict) and all(key in rule for key in ["condition", "operator", "value"]):
+                condition = rule["condition"]
+                operator = rule["operator"]
+                value = rule["value"]
+                
                 # Map field label to condition name if needed (case-insensitive)
                 condition_lower = condition.lower()
                 if condition_lower in field_label_to_condition_map:
@@ -3841,9 +4021,9 @@ async def fr_get_testrun_summary(
         #   "name": "Sprint 1 Test Run",
         #   "status": "active", 
         #   "ai_insights": {
-        #     "summary": "23/25 tests executed (92% complete). 21 passed, 2 failed.",
-        #     "quality_score": "Good",
-        #     "recommendations": ["Fix 2 failing test cases"]
+        #     "summary": "23/25 tests executed. 2 failed.",
+        #     "recommendation": "Fix failing tests.",
+        #     "data_source": "freshrelease_testrun_data_only"
         #   }
         # }
     """
