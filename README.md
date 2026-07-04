@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/dasscoax-freshrelease-mcp-badge.png)](https://mseep.ai/app/dasscoax-freshrelease-mcp)
+
 # Freshrelease MCP Server
 
 [![PyPI version](https://badge.fury.io/py/freshrelease-mcp.svg)](https://badge.fury.io/py/freshrelease-mcp)
